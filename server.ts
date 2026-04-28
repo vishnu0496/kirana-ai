@@ -43,7 +43,8 @@ if (serviceAccountEnv) {
 }
 
 const firestoreDatabaseId = process.env.FIREBASE_FIRESTORE_DATABASE_ID || "kirana-inventory-db";
-db = admin.firestore(firestoreDatabaseId);
+console.log(`[INIT] Connecting to Firestore Database: ${firestoreDatabaseId}`);
+db = admin.app().firestore(firestoreDatabaseId);
 
 // --- Initialize Gemini AI ---
 const genAI = new GoogleGenAI({ apiKey: GEMINI_KEY || "" });
