@@ -91,12 +91,17 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
   }
 
   const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",
-    systemInstruction: "You are a professional Kirana Shop Inventory Manager. Parse ADD, SELL, QUERY, REPORT. Return JSON only. For audio, include a 'transcript'."
+    model: "gemini-1.5-flash"
   });
 
   try {
-    const prompt = messageText || "Process this inventory request.";
+    const prompt = `
+      INSTRUCTION: You are a professional Kirana Shop Inventory Manager. 
+      Parse the following intent: ADD, SELL, QUERY, or REPORT. 
+      Return JSON only with fields: action, item, quantity, reply, transcript.
+      
+      USER MESSAGE: ${messageText || "Process this audio."}
+    `;
     const parts: any[] = [{ text: prompt }];
 
     if (audioData && mimeType) {
