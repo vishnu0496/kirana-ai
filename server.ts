@@ -84,46 +84,30 @@ async function downloadWhatsAppMedia(mediaId: string) {
 }
 
 // --- Core Logic: AI Processing ---
-async function parseMessageWithAI(messageText: string, audioData?: string, mimeType?: string) {
+async function parseMessageWithAI(messageText: string) {
   if (!GEMINI_KEY) {
     console.error("Gemini API Key missing.");
     return null;
   }
 
-  const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.0-flash"
-  });
-
-  console.log(`[DEBUG] Using Gemini Key starting with: ${GEMINI_KEY ? GEMINI_KEY.substring(0, 5) : "MISSING"}`);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
   try {
     const prompt = `
-      INSTRUCTION: You are a professional Kirana Shop Inventory Manager. 
-      Parse the following intent: ADD, SELL, QUERY, or REPORT. 
-      Return JSON only with fields: action, item, quantity, reply, transcript.
+      INSTRUCTION: You are a professional Kirana Shop Inventory Manager.
+      Understand the user's intent: ADD, SELL, QUERY, or REPORT.
+      Extract item and quantity for ADD/SELL.
+      Reply in the user's language (English, Hindi, or Telugu).
       
-      USER MESSAGE: ${messageText || "Process this audio."}
+      USER MESSAGE: ${messageText}
     `;
-    const parts: any[] = [{ text: prompt }];
-
-    if (audioData && mimeType) {
-      parts.push({
-        inlineData: {
-          mimeType: mimeType,
-          data: audioData
-        }
-      });
-    }
 
     const result = await model.generateContent({
-      contents: [{ role: "user", parts }],
-      generationConfig: {
-        responseMimeType: "application/json"
-      }
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: "application/json" }
     });
 
-    const responseText = result.response.text();
-    return JSON.parse(responseText.trim());
+    return JSON.parse(result.response.text().trim());
   } catch (e) {
     console.error("[AI ERROR]", e);
     return null;
@@ -181,68 +165,48 @@ app.get("/api/webhook/whatsapp", (req, res) => {
 // Incoming Messages
 app.post("/api/webhook/whatsapp", async (req, res) => {
   const body = req.body;
-
-  // 1. Extract message
   let messageText = "";
   let sender = "";
-  let audioData = null;
-  let mimeType = null;
 
   if (body.object === "whatsapp_business_account") {
-    const entry = body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const message = change?.value?.messages?.[0];
-    if (message) {
+    const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (message && message.type === "text") {
+      messageText = message.text.body;
       sender = message.from;
-      if (message.type === "text") {
-        messageText = message.text?.body || "";
-      } else if (message.type === "audio") {
-        console.log(`[WA] Received audio from ${sender}`);
-        const media = await downloadWhatsAppMedia(message.audio.id);
-        if (media) {
-          audioData = media.data;
-          mimeType = media.mimeType;
-        }
-      }
     }
   } else if (body.text) {
     messageText = body.text;
     sender = body.from || "919999999999";
   }
 
-  if (!messageText && !audioData) return res.sendStatus(200);
+  if (!messageText || !sender) return res.sendStatus(200);
 
-  console.log(`[WA RECV] ${sender}: ${messageText || "AUDIO"}`);
+  console.log(`[WA RECV] ${sender}: ${messageText}`);
 
   // 2. Parse with Gemini
-  const aiResult = await parseMessageWithAI(messageText, audioData, mimeType);
+  const aiResult = await parseMessageWithAI(messageText);
   if (!aiResult) return res.sendStatus(200);
 
-  const OWNER_NUMBER = process.env.OWNER_NUMBER || "919999999999";
   let finalReply = aiResult.reply;
 
   try {
-    // SECURITY CHECK: Only owner can modify stock
-    const isOwner = sender === OWNER_NUMBER;
+    // 3. Multi-tenant Database Paths
+    const shopRef = db.collection("shops").doc(sender);
+    const inventoryRef = shopRef.collection("inventory");
+    const logsRef = shopRef.collection("logs");
 
-    if ((aiResult.action === "ADD" || aiResult.action === "SELL") && !isOwner) {
-      await sendWhatsAppMessage(sender, "❌ Unauthorized: Only the shop owner can update inventory.");
-      return res.sendStatus(200);
-    }
-
-    // 3. Update Firestore
     if (aiResult.action === "ADD" || aiResult.action === "SELL") {
       const itemKey = aiResult.item.toLowerCase().trim();
-      const itemRef = db.collection("inventory").doc(itemKey);
+      const itemDocRef = inventoryRef.doc(itemKey);
       
       await db.runTransaction(async (transaction) => {
-        const itemDoc = await transaction.get(itemRef);
+        const itemDoc = await transaction.get(itemDocRef);
         const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
         const newQty = aiResult.action === "ADD" 
           ? currentQty + aiResult.quantity 
           : Math.max(0, currentQty - aiResult.quantity);
         
-        transaction.set(itemRef, {
+        transaction.set(itemDocRef, {
           name: aiResult.item,
           quantity: newQty,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -251,33 +215,29 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         finalReply += `\n📦 Current Total: ${newQty}`;
       });
 
-      await db.collection("logs").add({
-        sender,
+      await logsRef.add({
         action: aiResult.action,
         item: aiResult.item,
         quantity: aiResult.quantity,
-        transcript: aiResult.transcript || null,
         timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
 
     } else if (aiResult.action === "QUERY") {
-      const snapshot = await db.collection("inventory").get();
-      const items = snapshot.docs.map(d => {
-        const data = d.data();
-        return `- ${data.name}: ${data.quantity}`;
-      });
-      
+      const snapshot = await inventoryRef.get();
       if (snapshot.empty) {
         finalReply += "\nEmpty / ఖాళీగా ఉంది / खाली है";
       } else {
+        const items = snapshot.docs.map(doc => {
+          const d = doc.data();
+          return `- ${d.name}: ${d.quantity}`;
+        });
         finalReply += "\n" + items.join("\n");
       }
     } else if (aiResult.action === "REPORT") {
-      // Fetch today's logs
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
       
-      const logSnapshot = await db.collection("logs")
+      const logSnapshot = await logsRef
         .where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay))
         .get();
       
