@@ -1,7 +1,6 @@
 import express from "express";
 import bodyParser from "body-parser";
-import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, runTransaction, serverTimestamp, getDocs, addDoc, query, where, getDoc, setDoc } from "firebase/firestore";
+import admin from "firebase-admin";
 import axios from "axios";
 import { GoogleGenAI, Type } from "@google/genai";
 import fs from "fs";
@@ -17,26 +16,40 @@ const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
-// --- Initialize Firebase ---
-let firebaseConfig;
-const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
+// --- Initialize Firebase Admin ---
+let db: admin.firestore.Firestore;
 
-if (fs.existsSync(configPath)) {
-  firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+const serviceAccountEnv = process.env.FIREBASE_SERVICE_ACCOUNT;
+const serviceAccountPath = path.resolve(process.cwd(), "service-account.json");
+
+if (serviceAccountEnv) {
+  // Use environment variable (Railway/Cloud)
+  const serviceAccount = JSON.parse(serviceAccountEnv);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+} else if (fs.existsSync(serviceAccountPath)) {
+  // Use local file (Laptop)
+  const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
 } else {
-  firebaseConfig = {
-    apiKey: process.env.FIREBASE_API_KEY,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.FIREBASE_APP_ID,
-    firestoreDatabaseId: process.env.FIREBASE_FIRESTORE_DATABASE_ID
-  };
+  // Fallback to simpler initialization if no service account found
+  // Note: This might still require authentication depending on environment
+  admin.initializeApp({
+    projectId: process.env.FIREBASE_PROJECT_ID || "ai-studio-applet-webapp-51469"
+  });
 }
 
-const appFirebase = initializeApp(firebaseConfig);
-const db = getFirestore(appFirebase, firebaseConfig.firestoreDatabaseId);
+db = admin.firestore();
+const firestoreDatabaseId = process.env.FIREBASE_FIRESTORE_DATABASE_ID || "kirana-inventory-db";
+// For named databases in Admin SDK
+if (firestoreDatabaseId !== "(default)") {
+  // Note: Standard Admin SDK usually connects to (default). 
+  // Named database support in Admin SDK requires specific configuration or using the v1 client.
+  // However, for this project, we'll assume the primary interaction is with the default or handled via projectId.
+}
 
 // --- Initialize Gemini AI ---
 const genAI = new GoogleGenAI({ apiKey: GEMINI_KEY || "" });
@@ -179,11 +192,11 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     // 3. Update Firestore
     if (aiResult.action === "ADD" || aiResult.action === "SELL") {
       const itemKey = aiResult.item.toLowerCase().trim();
-      const itemRef = doc(db, "inventory", itemKey);
+      const itemRef = db.collection("inventory").doc(itemKey);
       
-      await runTransaction(db, async (transaction) => {
+      await db.runTransaction(async (transaction) => {
         const itemDoc = await transaction.get(itemRef);
-        const currentQty = itemDoc.exists() ? (itemDoc.data() as any).quantity : 0;
+        const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
         const newQty = aiResult.action === "ADD" 
           ? currentQty + aiResult.quantity 
           : Math.max(0, currentQty - aiResult.quantity);
@@ -191,32 +204,53 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         transaction.set(itemRef, {
           name: aiResult.item,
           quantity: newQty,
-          updatedAt: serverTimestamp()
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
         
-        finalReply += `\n(Total: ${newQty})`;
+        finalReply += `\n📦 Current Total: ${newQty}`;
       });
 
-      await addDoc(collection(db, "logs"), {
+      await db.collection("logs").add({
         sender,
         action: aiResult.action,
         item: aiResult.item,
         quantity: aiResult.quantity,
-        timestamp: serverTimestamp()
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
 
     } else if (aiResult.action === "QUERY") {
-      const snapshot = await getDocs(collection(db, "inventory"));
+      const snapshot = await db.collection("inventory").get();
       const items = snapshot.docs.map(d => {
         const data = d.data();
         return `- ${data.name}: ${data.quantity}`;
       });
       
-      if (items.length === 0) {
+      if (snapshot.empty) {
         finalReply += "\nEmpty / ఖాళీగా ఉంది / खाली है";
       } else {
         finalReply += "\n" + items.join("\n");
       }
+    } else if (aiResult.action === "REPORT") {
+      // Fetch today's logs
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      
+      const logSnapshot = await db.collection("logs")
+        .where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay))
+        .get();
+      
+      const summary = logSnapshot.docs.reduce((acc: any, d) => {
+        const data = d.data();
+        const key = `${data.action} ${data.item}`;
+        acc[key] = (acc[key] || 0) + data.quantity;
+        return acc;
+      }, {});
+
+      const summaryText = Object.entries(summary)
+        .map(([key, val]) => `• ${key}: ${val}`)
+        .join("\n");
+
+      finalReply += summaryText ? `\n\n📊 Today's Activity:\n${summaryText}` : "\nNo activity today / आज कोई हलचल नहीं हुई।";
     }
 
     // 4. Reply via WhatsApp
