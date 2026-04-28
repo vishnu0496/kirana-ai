@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Stock items in the shop",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "quantity", "unit"]
+    },
+    "Log": {
+      "title": "Activity Log",
+      "description": "Record of stock changes",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "description": { "type": "string" }
+      },
+      "required": ["timestamp", "description"]
+    },
+    "Message": {
+      "title": "WhatsApp Message",
+      "description": "Messages received via WhatsApp",
+      "type": "object",
+      "properties": {
+        "from": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "processed"] },
+        "reply": { "type": "string" }
+      },
+      "required": ["from", "text", "timestamp", "status"]
+    }
+  },
+  "firestore": {
+    "inventory": {
+      "schema": "InventoryItem",
+      "description": "Main inventory collection"
+    },
+    "logs": {
+      "schema": "Log",
+      "description": "Activity history"
+    },
+    "messages": {
+      "schema": "Message",
+      "description": "Queue of incoming messages"
+    }
+  }
+}
