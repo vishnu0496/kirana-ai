@@ -42,14 +42,8 @@ if (serviceAccountEnv) {
   });
 }
 
-db = admin.firestore();
 const firestoreDatabaseId = process.env.FIREBASE_FIRESTORE_DATABASE_ID || "kirana-inventory-db";
-// For named databases in Admin SDK
-if (firestoreDatabaseId !== "(default)") {
-  // Note: Standard Admin SDK usually connects to (default). 
-  // Named database support in Admin SDK requires specific configuration or using the v1 client.
-  // However, for this project, we'll assume the primary interaction is with the default or handled via projectId.
-}
+db = admin.firestore(firestoreDatabaseId);
 
 // --- Initialize Gemini AI ---
 const genAI = new GoogleGenAI({ apiKey: GEMINI_KEY || "" });
