@@ -91,8 +91,10 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
   }
 
   const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash"
+    model: "gemini-1.5-flash-latest"
   });
+
+  console.log(`[DEBUG] Using Gemini Key starting with: ${GEMINI_KEY ? GEMINI_KEY.substring(0, 5) : "MISSING"}`);
 
   try {
     const prompt = `
