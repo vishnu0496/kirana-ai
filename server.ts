@@ -3,7 +3,7 @@ import bodyParser from "body-parser";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import axios from "axios";
-import { GoogleGenAI, Type } from "@google/genai";
+import { createClient } from "@google/genai";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
@@ -51,7 +51,7 @@ console.log(`[INIT] Connecting to Firestore Database: ${firestoreDatabaseId}`);
 db = getFirestore(admin.app(), firestoreDatabaseId);
 
 // --- Initialize Gemini AI ---
-const genAI = new GoogleGenAI({ apiKey: GEMINI_KEY || "" });
+const client = createClient({ apiKey: GEMINI_KEY || "" });
 
 const app = express();
 app.use(bodyParser.json());
@@ -136,26 +136,27 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
       });
     }
 
-    const result = await genAI.getGenerativeModel({ model: model }).generateContent({
+    const result = await client.models.generateContent({
+      model: "gemini-1.5-flash",
       contents: [{ role: "user", parts }],
-      generationConfig: {
+      config: {
         responseMimeType: "application/json",
         responseSchema: {
-          type: Type.OBJECT,
+          type: "object",
           properties: {
-            action: { type: Type.STRING, enum: ["ADD", "SELL", "QUERY", "REPORT"] },
-            item: { type: Type.STRING },
-            quantity: { type: Type.NUMBER },
-            reply: { type: Type.STRING },
-            transcript: { type: Type.STRING }
+            action: { type: "string", enum: ["ADD", "SELL", "QUERY", "REPORT"] },
+            item: { type: "string" },
+            quantity: { type: "number" },
+            reply: { type: "string" },
+            transcript: { type: "string" }
           },
           required: ["action", "reply"]
         }
       }
     });
 
-    if (!result.response.text()) return null;
-    return JSON.parse(result.response.text().trim());
+    if (!result.value) return null;
+    return result.value;
   } catch (e) {
     console.error("[AI ERROR]", e);
     return null;
