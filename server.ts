@@ -63,7 +63,7 @@ async function sendWhatsAppMessage(to: string, text: string) {
     return;
   }
   try {
-    const url = `https://graph.facebook.com/v21.0/${PHONE_ID}/messages`;
+    const url = `https://graph.facebook.com/v20.0/${PHONE_ID}/messages`;
     await axios.post(
       url,
       {
@@ -119,7 +119,7 @@ async function parseMessageWithAI(message: string) {
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            action: { type: Type.STRING, enum: ["ADD", "SELL", "QUERY"] },
+            action: { type: Type.STRING, enum: ["ADD", "SELL", "QUERY", "REPORT"] },
             item: { type: Type.STRING },
             quantity: { type: Type.NUMBER },
             reply: { type: Type.STRING }
