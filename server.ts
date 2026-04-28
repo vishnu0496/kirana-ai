@@ -17,6 +17,9 @@ const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
+console.log(`[DEBUG] WHATSAPP_TOKEN starts with: ${WHATSAPP_TOKEN ? WHATSAPP_TOKEN.substring(0, 5) : "MISSING"}`);
+console.log(`[DEBUG] PHONE_ID: ${PHONE_ID || "MISSING"}`);
+
 // --- Initialize Firebase Admin ---
 let db: admin.firestore.Firestore;
 
