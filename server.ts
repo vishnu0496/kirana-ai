@@ -1,6 +1,7 @@
 import express from "express";
 import bodyParser from "body-parser";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import axios from "axios";
 import { GoogleGenAI, Type } from "@google/genai";
 import fs from "fs";
@@ -44,7 +45,7 @@ if (serviceAccountEnv) {
 
 const firestoreDatabaseId = process.env.FIREBASE_FIRESTORE_DATABASE_ID || "kirana-inventory-db";
 console.log(`[INIT] Connecting to Firestore Database: ${firestoreDatabaseId}`);
-db = admin.app().firestore(firestoreDatabaseId);
+db = getFirestore(admin.app(), firestoreDatabaseId);
 
 // --- Initialize Gemini AI ---
 const genAI = new GoogleGenAI({ apiKey: GEMINI_KEY || "" });
