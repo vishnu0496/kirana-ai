@@ -113,10 +113,22 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
   `;
 
   try {
-    let contents: any[] = [{ role: "user", parts: [{ text: messageText || "Process this inventory request." }] }];
+    const prompt = `
+      INSTRUCTION: You are a professional Kirana Shop Inventory Manager.
+      Parse the following intent: ADD, SELL, QUERY, or REPORT.
+      Generate a polite reply in the user's language.
+      If audio is provided, provide a 'transcript'.
+      
+      RULES:
+      - Return JSON only.
+      
+      USER INPUT: ${messageText || "Process the attached audio."}
+    `;
+
+    let parts: any[] = [{ text: prompt }];
     
     if (audioData && mimeType) {
-      contents[0].parts.push({
+      parts.push({
         inlineData: {
           mimeType: mimeType,
           data: audioData
@@ -124,8 +136,8 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
       });
     }
 
-    const response = await genAI.getGenerativeModel({ model: model, systemInstruction }).generateContent({
-      contents: contents,
+    const result = await genAI.getGenerativeModel({ model: model }).generateContent({
+      contents: [{ role: "user", parts }],
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -142,8 +154,8 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
       }
     });
 
-    if (!response.response.text) return null;
-    return JSON.parse(response.response.text().trim());
+    if (!result.response.text()) return null;
+    return JSON.parse(result.response.text().trim());
   } catch (e) {
     console.error("[AI ERROR]", e);
     return null;
