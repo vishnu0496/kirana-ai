@@ -4,19 +4,37 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, runTransaction, serverTimestamp, getDocs, addDoc, query, where, getDoc, setDoc } from "firebase/firestore";
 import axios from "axios";
 import { GoogleGenAI, Type } from "@google/genai";
-import firebaseConfig from "./firebase-applet-config.json" with { type: "json" };
+import fs from "fs";
+import path from "path";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 // --- Configuration ---
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
 // --- Initialize Firebase ---
+let firebaseConfig;
+const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
+
+if (fs.existsSync(configPath)) {
+  firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+} else {
+  firebaseConfig = {
+    apiKey: process.env.FIREBASE_API_KEY,
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+    appId: process.env.FIREBASE_APP_ID,
+    firestoreDatabaseId: process.env.FIREBASE_FIRESTORE_DATABASE_ID
+  };
+}
+
 const appFirebase = initializeApp(firebaseConfig);
 const db = getFirestore(appFirebase, firebaseConfig.firestoreDatabaseId);
 
