@@ -180,8 +180,6 @@ async function sendWhatsAppMessage(to: string, text: string) {
   }
 }
 
-}
-
 // --- Endpoints ---
 
 // Webhook Verification
