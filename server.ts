@@ -56,6 +56,100 @@ const genAI = new GoogleGenAI({ apiKey: GEMINI_KEY || "" });
 const app = express();
 app.use(bodyParser.json());
 
+// --- Core Logic: WhatsApp Media Downloader ---
+async function downloadWhatsAppMedia(mediaId: string) {
+  try {
+    // 1. Get Media URL
+    const response = await axios.get(`https://graph.facebook.com/v20.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+    });
+    
+    const mediaUrl = response.data.url;
+    const mimeType = response.data.mime_type;
+
+    // 2. Download Media Data
+    const mediaResponse = await axios.get(mediaUrl, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      responseType: "arraybuffer"
+    });
+
+    return {
+      data: Buffer.from(mediaResponse.data).toString("base64"),
+      mimeType: mimeType
+    };
+  } catch (error) {
+    console.error("[MEDIA ERROR] Failed to download:", error);
+    return null;
+  }
+}
+
+// --- Core Logic: AI Processing ---
+async function parseMessageWithAI(messageText: string, audioData?: string, mimeType?: string) {
+  if (!GEMINI_KEY) {
+    console.error("Gemini API Key missing.");
+    return null;
+  }
+
+  const model = "gemini-1.5-flash";
+  const systemInstruction = `
+    You are a professional Kirana Shop Inventory Manager.
+    Your job is to listen to voice notes or read messages from a shop owner and update the inventory database.
+    You understand messages in English, Hindi, and Telugu.
+    
+    TASKS:
+    1. Parse the intent: ADD (stock in), SELL (stock out), QUERY (check current stock), or REPORT (summary of today's activity).
+    2. Extract the item and quantity for ADD/SELL.
+    3. Generate a polite reply in the SAME language as the user.
+    4. If the input is audio, provide a 'transcript' of what you heard.
+    
+    RULES:
+    - For QUERY and REPORT, "item" and "quantity" can be null.
+    - For ADD/SELL, provide a JSON.
+    - If you are transcribing Telugu or Hindi, provide the transcript in the original script.
+    
+    Examples:
+    - "10 sabun aaya" -> { "action": "ADD", "item": "soap", "quantity": 10, "reply": "ठीक है भाई, 10 साबुन जोड़ दिए गए हैं。" }
+    - "stock cheppu" -> { "action": "QUERY", "reply": "సరే, ఇక్కడ మీ ఇన్వెంటరీ జాబితా ఉంది:" }
+  `;
+
+  try {
+    let contents: any[] = [{ role: "user", parts: [{ text: messageText || "Process this inventory request." }] }];
+    
+    if (audioData && mimeType) {
+      contents[0].parts.push({
+        inlineData: {
+          mimeType: mimeType,
+          data: audioData
+        }
+      });
+    }
+
+    const response = await genAI.getGenerativeModel({ model: model, systemInstruction }).generateContent({
+      contents: contents,
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            action: { type: Type.STRING, enum: ["ADD", "SELL", "QUERY", "REPORT"] },
+            item: { type: Type.STRING },
+            quantity: { type: Type.NUMBER },
+            reply: { type: Type.STRING },
+            transcript: { type: Type.STRING }
+          },
+          required: ["action", "reply"]
+        }
+      }
+    });
+
+    if (!response.response.text) return null;
+    return JSON.parse(response.response.text().trim());
+  } catch (e) {
+    console.error("[AI ERROR]", e);
+    return null;
+  }
+}
+
 // --- Core Logic: WhatsApp Message Sender ---
 async function sendWhatsAppMessage(to: string, text: string) {
   if (!WHATSAPP_TOKEN || !PHONE_ID) {
@@ -86,55 +180,6 @@ async function sendWhatsAppMessage(to: string, text: string) {
   }
 }
 
-// --- Core Logic: Gemini Inventory Parser ---
-async function parseMessageWithAI(message: string) {
-  const model = "gemini-3-flash-preview";
-  const systemInstruction = `
-    You are an inventory assistant for a Kirana shop in India. 
-    You understand messages in English, Hindi, and Telugu.
-    
-    TASKS:
-    1. Parse the intent: ADD (stock in), SELL (stock out), or QUERY (check stock).
-    2. Extract the item and quantity for ADD/SELL.
-    3. Generate a polite reply in the SAME language as the user.
-    
-    RULES:
-    - For QUERY, "item" can be null.
-    - For ADD/SELL, provide a JSON.
-    
-    Examples:
-    - "10 sabun aaya" -> { "action": "ADD", "item": "soap", "quantity": 10, "reply": "ठीक है भाई, 10 साबुन जोड़ दिए गए हैं।" }
-    - "5 biscuit becha" -> { "action": "SELL", "item": "biscuit", "quantity": 5, "reply": "सरे, 5 बिस्कुट अम्मानु।" }
-    - "stock cheppu" -> { "action": "QUERY", "reply": "సరే, ఇక్కడ మీ ఇన్వెంటరీ జాబితా ఉంది:" }
-    - "stock dikhao" -> { "action": "QUERY", "reply": "नमस्ते, यहाँ आपका स्टॉक है:" }
-  `;
-
-  try {
-    const response = await genAI.models.generateContent({
-      model: model,
-      contents: message,
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            action: { type: Type.STRING, enum: ["ADD", "SELL", "QUERY", "REPORT"] },
-            item: { type: Type.STRING },
-            quantity: { type: Type.NUMBER },
-            reply: { type: Type.STRING }
-          },
-          required: ["action", "reply"]
-        }
-      }
-    });
-
-    if (!response.text) return null;
-    return JSON.parse(response.text.trim());
-  } catch (e) {
-    console.error("[AI ERROR]", e);
-    return null;
-  }
 }
 
 // --- Endpoints ---
@@ -162,32 +207,51 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   // 1. Extract message
   let messageText = "";
   let sender = "";
+  let audioData = null;
+  let mimeType = null;
 
   if (body.object === "whatsapp_business_account") {
     const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
     const message = change?.value?.messages?.[0];
     if (message) {
-      messageText = message.text?.body || "";
       sender = message.from;
+      if (message.type === "text") {
+        messageText = message.text?.body || "";
+      } else if (message.type === "audio") {
+        console.log(`[WA] Received audio from ${sender}`);
+        const media = await downloadWhatsAppMedia(message.audio.id);
+        if (media) {
+          audioData = media.data;
+          mimeType = media.mimeType;
+        }
+      }
     }
   } else if (body.text) {
-    // For manual local testing
     messageText = body.text;
     sender = body.from || "919999999999";
   }
 
-  if (!messageText) return res.sendStatus(200);
+  if (!messageText && !audioData) return res.sendStatus(200);
 
-  console.log(`[WA RECV] ${sender}: ${messageText}`);
+  console.log(`[WA RECV] ${sender}: ${messageText || "AUDIO"}`);
 
   // 2. Parse with Gemini
-  const aiResult = await parseMessageWithAI(messageText);
+  const aiResult = await parseMessageWithAI(messageText, audioData, mimeType);
   if (!aiResult) return res.sendStatus(200);
 
+  const OWNER_NUMBER = process.env.OWNER_NUMBER || "919999999999";
   let finalReply = aiResult.reply;
 
   try {
+    // SECURITY CHECK: Only owner can modify stock
+    const isOwner = sender === OWNER_NUMBER;
+
+    if ((aiResult.action === "ADD" || aiResult.action === "SELL") && !isOwner) {
+      await sendWhatsAppMessage(sender, "❌ Unauthorized: Only the shop owner can update inventory.");
+      return res.sendStatus(200);
+    }
+
     // 3. Update Firestore
     if (aiResult.action === "ADD" || aiResult.action === "SELL") {
       const itemKey = aiResult.item.toLowerCase().trim();
@@ -214,6 +278,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         action: aiResult.action,
         item: aiResult.item,
         quantity: aiResult.quantity,
+        transcript: aiResult.transcript || null,
         timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
 
