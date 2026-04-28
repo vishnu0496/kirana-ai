@@ -3,7 +3,7 @@ import bodyParser from "body-parser";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import axios from "axios";
-import { createClient } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
@@ -51,7 +51,7 @@ console.log(`[INIT] Connecting to Firestore Database: ${firestoreDatabaseId}`);
 db = getFirestore(admin.app(), firestoreDatabaseId);
 
 // --- Initialize Gemini AI ---
-const client = createClient({ apiKey: GEMINI_KEY || "" });
+const genAI = new GoogleGenerativeAI(GEMINI_KEY || "");
 
 const app = express();
 app.use(bodyParser.json());
@@ -90,43 +90,15 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
     return null;
   }
 
-  const model = "gemini-1.5-flash";
-  const systemInstruction = `
-    You are a professional Kirana Shop Inventory Manager.
-    Your job is to listen to voice notes or read messages from a shop owner and update the inventory database.
-    You understand messages in English, Hindi, and Telugu.
-    
-    TASKS:
-    1. Parse the intent: ADD (stock in), SELL (stock out), QUERY (check current stock), or REPORT (summary of today's activity).
-    2. Extract the item and quantity for ADD/SELL.
-    3. Generate a polite reply in the SAME language as the user.
-    4. If the input is audio, provide a 'transcript' of what you heard.
-    
-    RULES:
-    - For QUERY and REPORT, "item" and "quantity" can be null.
-    - For ADD/SELL, provide a JSON.
-    - If you are transcribing Telugu or Hindi, provide the transcript in the original script.
-    
-    Examples:
-    - "10 sabun aaya" -> { "action": "ADD", "item": "soap", "quantity": 10, "reply": "ठीक है भाई, 10 साबुन जोड़ दिए गए हैं。" }
-    - "stock cheppu" -> { "action": "QUERY", "reply": "సరే, ఇక్కడ మీ ఇన్వెంటరీ జాబితా ఉంది:" }
-  `;
+  const model = genAI.getGenerativeModel({ 
+    model: "gemini-1.5-flash",
+    systemInstruction: "You are a professional Kirana Shop Inventory Manager. Parse ADD, SELL, QUERY, REPORT. Return JSON only. For audio, include a 'transcript'."
+  });
 
   try {
-    const prompt = `
-      INSTRUCTION: You are a professional Kirana Shop Inventory Manager.
-      Parse the following intent: ADD, SELL, QUERY, or REPORT.
-      Generate a polite reply in the user's language.
-      If audio is provided, provide a 'transcript'.
-      
-      RULES:
-      - Return JSON only.
-      
-      USER INPUT: ${messageText || "Process the attached audio."}
-    `;
+    const prompt = messageText || "Process this inventory request.";
+    const parts: any[] = [{ text: prompt }];
 
-    let parts: any[] = [{ text: prompt }];
-    
     if (audioData && mimeType) {
       parts.push({
         inlineData: {
@@ -136,27 +108,15 @@ async function parseMessageWithAI(messageText: string, audioData?: string, mimeT
       });
     }
 
-    const result = await client.models.generateContent({
-      model: "gemini-1.5-flash",
+    const result = await model.generateContent({
       contents: [{ role: "user", parts }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "object",
-          properties: {
-            action: { type: "string", enum: ["ADD", "SELL", "QUERY", "REPORT"] },
-            item: { type: "string" },
-            quantity: { type: "number" },
-            reply: { type: "string" },
-            transcript: { type: "string" }
-          },
-          required: ["action", "reply"]
-        }
+      generationConfig: {
+        responseMimeType: "application/json"
       }
     });
 
-    if (!result.value) return null;
-    return result.value;
+    const responseText = result.response.text();
+    return JSON.parse(responseText.trim());
   } catch (e) {
     console.error("[AI ERROR]", e);
     return null;
