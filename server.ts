@@ -245,11 +245,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         isAnyAction = true;
       } 
       else if (effectiveAction === "report") {
-        const logs = await getTodayTransactions(sender);
-        console.log(`[DEBUG] Today's transactions count: ${logs.length}`);
-        logs.forEach(l => console.log(`[DEBUG TX] ${l.timestamp?.toDate().toISOString()} | ${l.action} | ${l.item}`));
-
-        if (logs.length === 0) {
+        const txs = await getTodayTransactions(sender);
+        if (txs.length === 0) {
           let emptyMsg = "No transactions today yet! Start by adding stock 📦";
           if (lang === "telugu") emptyMsg = "Neti transactions emi levu! Stock add cheyandi 📦";
           else if (lang === "hindi") emptyMsg = "Aaj koi transaction nahi! Stock add karo 📦";
@@ -258,37 +255,43 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           continue;
         }
 
-        // FIX 2: Revenue lazy lookup for items sold before price was set
-        for (const l of logs) {
-          if (l.action === "SELL" && !l.revenue && l.item) {
-            const currentPrice = await getItemPrice(sender, l.item);
-            if (currentPrice) {
-              l.price = currentPrice;
-              l.revenue = l.quantity * currentPrice;
-            }
+        const sells = txs.filter(t => t.action === "SELL");
+        const adds = txs.filter(t => t.action === "ADD");
+
+        // Revenue with lazy price lookup
+        let totalRevenue = 0;
+        const sellLines: string[] = [];
+
+        for (const t of sells) {
+          let revenue = (t as any).revenue ?? 0;
+          if (!revenue && t.item) {
+            const price = await getItemPrice(sender, t.item);
+            if (price) revenue = price * t.quantity;
           }
+          totalRevenue += revenue;
+          const revenueStr = revenue ? ` (₹${revenue})` : "";
+          sellLines.push(`🛒 Sold ${capitalize(t.item)}: ${t.quantity}${revenueStr}`);
         }
 
-        let totalRevenue = 0;
-        const summary = logs.reduce((acc: any, l: any) => {
-          const isSell = l.action === "SELL";
-          const label = isSell ? "🛒 Sold" : "📦 Stocked";
-          const key = `${label} ${capitalize(l.item)}`;
-          acc[key] = (acc[key] || { qty: 0, unit: l.unit || "", rev: 0 });
-          acc[key].qty += l.quantity;
-          if (isSell) {
-            const rev = l.revenue || 0;
-            acc[key].rev += rev;
-            totalRevenue += rev;
-          }
-          return acc;
-        }, {});
-        const text = Object.entries(summary).map(([k, v]: [string, any]) => {
-          const revText = v.rev > 0 ? ` (₹${v.rev})` : "";
-          return `• ${k}: ${v.qty} ${v.unit}${revText}`.trim();
-        }).join("\n");
-        results.push(reply.reportHeader(ownerName) + "\n" + text);
-        if (totalRevenue > 0) results.push(reply.reportRevenue(totalRevenue));
+        // Group adds by item name
+        const addMap: Record<string, number> = {};
+        for (const t of adds) {
+          addMap[t.item] = (addMap[t.item] ?? 0) + t.quantity;
+        }
+        const addLines = Object.entries(addMap)
+          .map(([item, qty]) => `📦 Stocked ${capitalize(item)}: ${qty}`);
+
+        const reportText = sellLines.length
+          ? sellLines.join("\n")
+          : "Inniki emee ammaledu 🙂";
+
+        const finalReply = 
+          `Sulla anna, neti report idi:\n\n` + 
+          reportText + "\n\n" + 
+          (addLines.length ? addLines.join("\n") + "\n\n" : "") + 
+          `💰 Mottam aaya: ₹${totalRevenue}`;
+
+        results.push(finalReply);
         isAnyAction = true;
       }
  else if (parsed.action !== "skip") {
