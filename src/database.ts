@@ -186,7 +186,18 @@ async function getTodayTransactions(phone: string) {
     .orderBy("timestamp", "asc")
     .get();
     
-  return snapshot.docs.map(doc => doc.data());
+  // JS-side filter to exclude any docs without timestamp and double-check the date matches today
+  return snapshot.docs
+    .map(doc => doc.data())
+    .filter(tx => {
+      if (!tx.timestamp) return false;
+      const txDate = tx.timestamp.toDate();
+      return (
+        txDate.getFullYear() === now.getFullYear() &&
+        txDate.getMonth() === now.getMonth() &&
+        txDate.getDate() === now.getDate()
+      );
+    });
 }
 
 export { 

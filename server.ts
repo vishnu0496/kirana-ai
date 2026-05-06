@@ -246,6 +246,9 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       } 
       else if (effectiveAction === "report") {
         const logs = await getTodayTransactions(sender);
+        console.log(`[DEBUG] Today's transactions count: ${logs.length}`);
+        logs.forEach(l => console.log(`[DEBUG TX] ${l.timestamp?.toDate().toISOString()} | ${l.action} | ${l.item}`));
+
         if (logs.length === 0) {
           let emptyMsg = "No transactions today yet! Start by adding stock 📦";
           if (lang === "telugu") emptyMsg = "Neti transactions emi levu! Stock add cheyandi 📦";
