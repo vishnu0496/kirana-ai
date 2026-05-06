@@ -91,7 +91,7 @@ async function parseMessageWithAI(messageText: string): Promise<ParsedAction | n
     return null;
   }
 
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
   try {
     const prompt = `
@@ -99,6 +99,18 @@ async function parseMessageWithAI(messageText: string): Promise<ParsedAction | n
       Understand the user's intent: ADD, SELL, QUERY, or REPORT.
       Extract item and quantity for ADD/SELL.
       Reply in the user's language (English, Hindi, or Telugu).
+
+      EXAMPLES OF TELUGU/HINDI PATTERNS:
+      - "padi X vachayi" = ADD X items
+      - "X aaya / aaye" = ADD X items  
+      - "X becha / bech diya" = SELL X items
+      - "stock dikhao / inventory batao" = QUERY
+      - Numbers in Telugu: padi=10, anu=5, rendu=2, okati=1
+
+      RULES:
+      1. If quantity is mentioned as a word like 'padi' (10 in Telugu), convert it to the number.
+      2. If you cannot determine the action with confidence, return action: QUERY with a reply asking the user to clarify.
+      3. Always return valid JSON.
       
       You MUST return a strict JSON object with this exact structure:
       {
@@ -272,7 +284,7 @@ async function sendWhatsAppMessage(to: string, text: string) {
 async function handleInvalidParse(sender: string) {
   await sendWhatsAppMessage(
     sender,
-    "Sorry, I couldn’t understand that. Try messages like 'add 5 rice bags' or 'show inventory'."
+    "Samajh nahi aaya 🙏 Try: 'add 5 chips' ya 'show inventory'"
   );
 }
 
