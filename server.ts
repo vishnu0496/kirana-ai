@@ -57,6 +57,7 @@ const app = express();
 app.use(bodyParser.json());
 
 // --- Core Logic: WhatsApp Media Downloader ---
+// Note: reserved for future media support
 async function downloadWhatsAppMedia(mediaId: string) {
   try {
     // 1. Get Media URL
@@ -84,7 +85,7 @@ async function downloadWhatsAppMedia(mediaId: string) {
 }
 
 // --- Core Logic: AI Processing ---
-async function parseMessageWithAI(messageText: string) {
+async function parseMessageWithAI(messageText: string): Promise<ParsedAction | null> {
   if (!GEMINI_KEY) {
     console.error("Gemini API Key missing.");
     return null;
@@ -99,6 +100,14 @@ async function parseMessageWithAI(messageText: string) {
       Extract item and quantity for ADD/SELL.
       Reply in the user's language (English, Hindi, or Telugu).
       
+      You MUST return a strict JSON object with this exact structure:
+      {
+        "action": "ADD" | "SELL" | "QUERY" | "REPORT",
+        "item": "string (item name, or empty string)",
+        "quantity": number (positive integer, or 0),
+        "reply": "string (your conversational reply)"
+      }
+      
       USER MESSAGE: ${messageText}
     `;
 
@@ -107,11 +116,127 @@ async function parseMessageWithAI(messageText: string) {
       generationConfig: { responseMimeType: "application/json" }
     });
 
-    return JSON.parse(result.response.text().trim());
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(result.response.text().trim());
+    } catch (parseError) {
+      return null;
+    }
+
+    if (!isValidParsedAction(parsedResult)) {
+      console.error("[AI INVALID] Invalid action from AI:", parsedResult);
+      return null;
+    }
+
+    return parsedResult;
   } catch (e) {
     console.error("[AI ERROR]", e);
     return null;
   }
+}
+
+// --- Core Logic: Rule-Based Parser & Validation ---
+interface ParsedAction {
+  action: "ADD" | "SELL" | "QUERY" | "REPORT";
+  item: string;
+  quantity: number;
+  reply: string;
+}
+
+function parseMessageRuleBased(messageText: string): ParsedAction | null {
+  const text = messageText.toLowerCase().trim();
+
+  if (text === "show inventory" || text === "inventory") {
+    return { action: "QUERY", item: "", quantity: 0, reply: "Here is your current inventory:" };
+  }
+  if (text === "today report" || text === "report") {
+    return { action: "REPORT", item: "", quantity: 0, reply: "Here is today's report:" };
+  }
+
+  const addMatch = text.match(/^add\s+(\d+)\s+(.+)$/i);
+  if (addMatch) {
+    return { action: "ADD", quantity: parseInt(addMatch[1], 10), item: addMatch[2].trim(), reply: `Added ${addMatch[1]} ${addMatch[2].trim()}` };
+  }
+
+  const sellMatch = text.match(/^(?:sold|sell)\s+(\d+)\s+(.+)$/i);
+  if (sellMatch) {
+    return { action: "SELL", quantity: parseInt(sellMatch[1], 10), item: sellMatch[2].trim(), reply: `Sold ${sellMatch[1]} ${sellMatch[2].trim()}` };
+  }
+
+  return null;
+}
+
+function isValidParsedAction(result: any): result is ParsedAction {
+  if (!result || typeof result !== "object") return false;
+  if (!["ADD", "SELL", "QUERY", "REPORT"].includes(result.action)) return false;
+  
+  if (result.action === "ADD" || result.action === "SELL") {
+    if (typeof result.item !== "string" || result.item.trim() === "") return false;
+    if (typeof result.quantity !== "number" || result.quantity <= 0) return false;
+  }
+  
+  if (typeof result.reply !== "string") return false;
+  return true;
+}
+
+// --- Core Logic: Database Processors ---
+async function processAddSell(sender: string, parsed: ParsedAction): Promise<string> {
+  const shopRef = db.collection("shops").doc(sender);
+  const inventoryRef = shopRef.collection("inventory");
+  const logsRef = shopRef.collection("logs");
+
+  const itemKey = parsed.item.toLowerCase().trim();
+  const itemDocRef = inventoryRef.doc(itemKey);
+  
+  let newQty = 0;
+  await db.runTransaction(async (transaction) => {
+    const itemDoc = await transaction.get(itemDocRef);
+    const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+    newQty = parsed.action === "ADD" 
+      ? currentQty + parsed.quantity 
+      : Math.max(0, currentQty - parsed.quantity);
+    
+    transaction.set(itemDocRef, {
+      name: parsed.item,
+      quantity: newQty,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  });
+
+  await logsRef.add({
+    action: parsed.action,
+    item: parsed.item,
+    quantity: parsed.quantity,
+    timestamp: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  return `${parsed.reply}\n📦 Current Total: ${newQty}`;
+}
+
+async function buildQueryReply(sender: string, parsed: ParsedAction): Promise<string> {
+  const inventoryRef = db.collection("shops").doc(sender).collection("inventory");
+  const snapshot = await inventoryRef.get();
+  if (snapshot.empty) return parsed.reply + "\nEmpty / ఖాళీగా ఉంది / खाली है";
+  
+  const items = snapshot.docs.map(doc => `- ${doc.data().name}: ${doc.data().quantity}`);
+  return parsed.reply + "\n" + items.join("\n");
+}
+
+async function buildReportReply(sender: string, parsed: ParsedAction): Promise<string> {
+  const logsRef = db.collection("shops").doc(sender).collection("logs");
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  
+  const logSnapshot = await logsRef.where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay)).get();
+  const summary = logSnapshot.docs.reduce((acc: any, d) => {
+    const data = d.data();
+    const key = `${data.action} ${data.item}`;
+    acc[key] = (acc[key] || 0) + data.quantity;
+    return acc;
+  }, {});
+
+  const summaryText = Object.entries(summary).map(([key, val]) => `• ${key}: ${val}`).join("\n");
+  return summaryText ? `${parsed.reply}\n\n📊 Today's Activity:\n${summaryText}` : `${parsed.reply}\nNo activity today / आज कोई हलचल नहीं हुई।`;
 }
 
 // --- Core Logic: WhatsApp Message Sender ---
@@ -144,6 +269,13 @@ async function sendWhatsAppMessage(to: string, text: string) {
   }
 }
 
+async function handleInvalidParse(sender: string) {
+  await sendWhatsAppMessage(
+    sender,
+    "Sorry, I couldn’t understand that. Try messages like 'add 5 rice bags' or 'show inventory'."
+  );
+}
+
 // --- Endpoints ---
 
 // Webhook Verification
@@ -159,6 +291,8 @@ app.get("/api/webhook/whatsapp", (req, res) => {
     } else {
       res.sendStatus(403);
     }
+  } else {
+    res.sendStatus(403);
   }
 });
 
@@ -183,76 +317,33 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 
   console.log(`[WA RECV] ${sender}: ${messageText}`);
 
-  // 2. Parse with Gemini
-  const aiResult = await parseMessageWithAI(messageText);
-  if (!aiResult) return res.sendStatus(200);
+  // 2. Parse with Rules or AI Fallback
+  let parsedAction = parseMessageRuleBased(messageText);
+  let handledBy = "RULES";
 
-  let finalReply = aiResult.reply;
+  if (!parsedAction) {
+    parsedAction = await parseMessageWithAI(messageText);
+    handledBy = "AI";
+  }
+
+  console.log(`[PARSE] Handled by: ${handledBy}`);
+
+  if (!isValidParsedAction(parsedAction)) {
+    console.error(`[PARSE ERROR] Invalid action received from ${handledBy}:`, parsedAction);
+    await handleInvalidParse(sender);
+    return res.sendStatus(200);
+  }
+
+  let finalReply = "";
 
   try {
-    // 3. Multi-tenant Database Paths
-    const shopRef = db.collection("shops").doc(sender);
-    const inventoryRef = shopRef.collection("inventory");
-    const logsRef = shopRef.collection("logs");
-
-    if (aiResult.action === "ADD" || aiResult.action === "SELL") {
-      const itemKey = aiResult.item.toLowerCase().trim();
-      const itemDocRef = inventoryRef.doc(itemKey);
-      
-      await db.runTransaction(async (transaction) => {
-        const itemDoc = await transaction.get(itemDocRef);
-        const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
-        const newQty = aiResult.action === "ADD" 
-          ? currentQty + aiResult.quantity 
-          : Math.max(0, currentQty - aiResult.quantity);
-        
-        transaction.set(itemDocRef, {
-          name: aiResult.item,
-          quantity: newQty,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        
-        finalReply += `\n📦 Current Total: ${newQty}`;
-      });
-
-      await logsRef.add({
-        action: aiResult.action,
-        item: aiResult.item,
-        quantity: aiResult.quantity,
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-    } else if (aiResult.action === "QUERY") {
-      const snapshot = await inventoryRef.get();
-      if (snapshot.empty) {
-        finalReply += "\nEmpty / ఖాళీగా ఉంది / खाली है";
-      } else {
-        const items = snapshot.docs.map(doc => {
-          const d = doc.data();
-          return `- ${d.name}: ${d.quantity}`;
-        });
-        finalReply += "\n" + items.join("\n");
-      }
-    } else if (aiResult.action === "REPORT") {
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      
-      const logSnapshot = await logsRef
-        .where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay))
-        .get();
-      
-      const summary = logSnapshot.docs.reduce((acc: any, d) => {
-        const data = d.data();
-        const key = `${data.action} ${data.item}`;
-        acc[key] = (acc[key] || 0) + data.quantity;
-        return acc;
-      }, {});
-
-      const summaryText = Object.entries(summary)
-        .map(([key, val]) => `• ${key}: ${val}`)
-        .join("\n");
-
-      finalReply += summaryText ? `\n\n📊 Today's Activity:\n${summaryText}` : "\nNo activity today / आज कोई हलचल नहीं हुई।";
+    // 3. Process the validated action
+    if (parsedAction.action === "ADD" || parsedAction.action === "SELL") {
+      finalReply = await processAddSell(sender, parsedAction);
+    } else if (parsedAction.action === "QUERY") {
+      finalReply = await buildQueryReply(sender, parsedAction);
+    } else if (parsedAction.action === "REPORT") {
+      finalReply = await buildReportReply(sender, parsedAction);
     }
 
     // 4. Reply via WhatsApp
@@ -262,7 +353,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     console.error("[PROCESS ERROR]", error);
   }
 
-  res.status(200).json({ success: true, aiResult });
+  res.status(200).json({ success: true, handledBy, result: parsedAction });
 });
 
 // Health check
