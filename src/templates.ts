@@ -1,0 +1,96 @@
+const replyTemplates = {
+  english: {
+    askShopName: "Welcome to Kirana AI! 👋\nWhat is your shop name?",
+    shopRegistered: (shop: string) =>
+      `Great! ${shop} registered ✅\nWhat is your name?`,
+    welcomeUser: (name: string, shop: string) =>
+      `Welcome ${name}! 🎉\n${shop} is ready on Kirana AI.\n\nTry these:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
+    addSuccess: (qty: number, item: string, total: number) =>
+      `Added ${qty} ${item}! 📦 Total stock: ${total}`,
+    soldSuccess: (qty: number, item: string, remaining: number) =>
+      `Sold ${qty} ${item}! 🛒 Remaining: ${remaining}`,
+    lowStock: (item: string, remaining: number) =>
+      `⚠️ Low stock: ${item} only ${remaining} left — reorder soon!`,
+    outOfStock: (item: string) =>
+      `❌ ${item} is out of stock. Please restock first.`,
+    bulkAddSuccess: (lines: string) => 
+      `Stock updated! 📦\n${lines}`,
+    inventoryHeader: (name: string) =>
+      `${name}, here is your inventory:`,
+    reportHeader: (name: string) =>
+      `${name}, here is today's report:`,
+    greeting: (name: string) =>
+      `Hey ${name}! 👋 How can I help?\nTry: 'add 10 soaps' or 'show inventory'`,
+    notUnderstood:
+      "Didn't understand 🙏 Try: 'add 5 chips' or 'show inventory'",
+    notUnderstoodHelp: (item1: string, item2: string) => 
+      `Didn't get that 🙏\nTry something like:\n• add 10 ${item1}\n• sold 5 ${item2}\n• show inventory`,
+    bulkDone: "All updates done! 📦",
+  },
+  telugu: {
+    askShopName:
+      "Kirana AI ki swaagatam! 👋\nMee shop peru cheppagalaru?",
+    shopRegistered: (shop: string) =>
+      `Baagundi! ${shop} register ayyindi ✅\nMee peru cheppandi?`,
+    welcomeUser: (name: string, shop: string) =>
+      `Swaagatam ${name} anna! 🎉\n${shop} Kirana AI lo ready ga undi.\n\nIvi try cheyyandi:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
+    addSuccess: (qty: number, item: string, total: number) =>
+      `${qty} ${item} add chesamu! 📦 Meeru unna stock: ${total}`,
+    soldSuccess: (qty: number, item: string, remaining: number) =>
+      `${qty} ${item} ammamu! 🛒 Migilina stock: ${remaining}`,
+    lowStock: (item: string, remaining: number) =>
+      `⚠️ Stock takkuva: ${item} kevalam ${remaining} undhi — tvaraga order ivvandi!`,
+    outOfStock: (item: string) =>
+      `❌ ${item} stock ledu. Mundu restock cheyyandi.`,
+    bulkAddSuccess: (lines: string) => 
+      `Stock updated! 📦\n${lines}`,
+    inventoryHeader: (name: string) =>
+      `${name} anna, mee inventory idi:`,
+    reportHeader: (name: string) =>
+      `${name} anna, neti report idi:`,
+    greeting: (name: string) =>
+      `Baagundi ${name} anna! 👋 Ela help cheyyali?\nTry: 'add 10 soaps' or 'show inventory'`,
+    notUnderstood:
+      "Artham kaaledu 🙏 Try: 'add 5 chips' or 'show inventory'",
+    notUnderstoodHelp: (item1: string, item2: string) => 
+      `Artham kaaledu 🙏\nIla try cheyyandi:\n• add 10 ${item1}\n• 5 ${item2} ammamu\n• nilava chupandi`,
+    bulkDone: "Anni update ayyayi! 📦",
+  },
+  hindi: {
+    askShopName:
+      "Kirana AI mein swagat! 👋\nApka shop ka naam kya hai?",
+    shopRegistered: (shop: string) =>
+      `Badhiya! ${shop} register ho gaya ✅\nApka naam batayein?`,
+    welcomeUser: (name: string, shop: string) =>
+      `Swagat hai ${name} bhai! 🎉\n${shop} Kirana AI pe ready hai.\n\nYe try karein:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
+    addSuccess: (qty: number, item: string, total: number) =>
+      `${qty} ${item} add ho gaya! 📦 Total stock: ${total}`,
+    soldSuccess: (qty: number, item: string, remaining: number) =>
+      `${qty} ${item} bik gaya! 🛒 Bacha hua: ${remaining}`,
+    lowStock: (item: string, remaining: number) =>
+      `⚠️ Stock kam: ${item} sirf ${remaining} bacha — jaldi order karo!`,
+    outOfStock: (item: string) =>
+      `❌ ${item} khatam ho gaya. Pehle restock karo.`,
+    bulkAddSuccess: (lines: string) => 
+      `Stock updated! 📦\n${lines}`,
+    inventoryHeader: (name: string) =>
+      `${name} bhai, aapki inventory:`,
+    reportHeader: (name: string) =>
+      `${name} bhai, aaj ki report:`,
+    greeting: (name: string) =>
+      `Kya haal hai ${name} bhai! 👋 Kya help chahiye?\nTry: 'add 10 soaps' ya 'show inventory'`,
+    notUnderstood:
+      "Samajh nahi aaya 🙏 Try: 'add 5 chips' ya 'show inventory'",
+    notUnderstoodHelp: (item1: string, item2: string) => 
+      `Samajh nahi aaya 🙏\nAisa try karein:\n• add 10 ${item1}\n• 5 ${item2} becha\n• stock dikao`,
+    bulkDone: "Sab update ho gaya! 📦",
+  },
+};
+
+type Lang = "english" | "telugu" | "hindi";
+
+function getReply(lang: string) {
+  return replyTemplates[(lang as Lang)] ?? replyTemplates.english;
+}
+
+export { replyTemplates, getReply, type Lang };
