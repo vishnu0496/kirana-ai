@@ -5,12 +5,13 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import admin from "firebase-admin";
 import dotenv from "dotenv";
 
-import { smartParse, detectLanguage, cleanItemName, capitalize, addVerbs, soldVerbs } from "./src/parser";
+import { smartParse, detectLanguage, cleanItemName, capitalize, addVerbs, soldVerbs, priceWords } from "./src/parser";
 import { replyTemplates, getReply, Lang } from "./src/templates";
 import { 
   getUser, saveUser, updateStock, getInventory, 
   logTransaction, getTodayTransactions,
-  getOnboardingState, setOnboardingState, clearOnboardingState
+  getOnboardingState, setOnboardingState, clearOnboardingState,
+  setItemPrice, getItemPrice, getPendingPrice, setPendingPrice, clearPendingPrice
 } from "./src/database";
 
 dotenv.config();
@@ -29,7 +30,14 @@ async function parseMessageWithAI(messageText: string): Promise<any> {
   if (!GEMINI_KEY) return null;
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
   try {
-    const prompt = `INSTRUCTION: Professional Kirana Inventory Manager. Extract action (ADD/SELL/QUERY/REPORT), item, quantity. Return JSON. USER: ${messageText}`;
+    const prompt = `INSTRUCTION: Professional Kirana Inventory Manager. Return JSON with this exact structure:
+    {
+      "action": "add" | "sold" | "inventory" | "report" | "unknown",
+      "item": "item name without unit",
+      "quantity": number,
+      "unit": "kg" | "ltr" | "pkt" | "pcs" | "box" | "bottle" | "" 
+    }
+    USER: ${messageText}`;
     const result = await model.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } });
     return JSON.parse(result.response.text().trim());
   } catch { return null; }
@@ -100,8 +108,22 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   }
 
   const reply = getReply(lang), ownerName = (profile.ownerName || "Owner").split(" ")[0];
+
+  // FEATURE 5C: Handle pending price response
+  const pendingItem = await getPendingPrice(sender);
+  if (pendingItem && /^\d+$/.test(messageText.trim())) {
+    const price = parseInt(messageText.trim());
+    await setItemPrice(sender, pendingItem, price);
+    await clearPendingPrice(sender);
+    await sendWhatsAppMessage(sender, reply.priceSetSuccess(capitalize(pendingItem), price));
+    return res.sendStatus(200);
+  } else if (pendingItem) {
+    await clearPendingPrice(sender); // User sent something else, skip price
+  }
+
   const lines = messageText.split("\n").filter(l => l.trim() !== "");
   let results: string[] = [], isAnyAction = false, contextAction: "add" | "sold" | null = null;
+  let itemsNeedingPrice: string[] = [];
 
   for (const line of lines) {
     const parsed = await parseMessage(line);
@@ -122,7 +144,24 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     if (effectiveAction === "greeting") {
       results.push(reply.greeting(ownerName));
       isAnyAction = true;
-    } else if (["add", "sold"].includes(effectiveAction) && (parsed.item || line.match(/\d/))) {
+    } 
+    else if (effectiveAction === "set_price") {
+      await setItemPrice(sender, parsed.item, parsed.price);
+      results.push(reply.priceSetSuccess(capitalize(parsed.item), parsed.price));
+      isAnyAction = true;
+    }
+    else if (effectiveAction === "low_stock") {
+      const inv = await getInventory(sender);
+      const lowItems = inv.filter((i: any) => i.quantity < 5).sort((a, b) => a.name.localeCompare(b.name));
+      if (lowItems.length === 0) {
+        results.push(reply.noLowStock(ownerName));
+      } else {
+        results.push(reply.lowStockHeader(ownerName));
+        lowItems.forEach((i: any) => results.push(reply.lowStockItem(capitalize(i.name), i.quantity, i.unit || "")));
+      }
+      isAnyAction = true;
+    }
+    else if (["add", "sold"].includes(effectiveAction) && (parsed.item || line.match(/\d/))) {
       let item = parsed.item, qty = parsed.quantity, unit = parsed.unit || "";
       if (!item) {
         const m = line.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
@@ -134,30 +173,62 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       }
       if (item && qty) {
         const isAdd = effectiveAction === "add";
-        const { newQty, finalUnit, finalItem } = await updateStock(sender, item, qty, isAdd ? "ADD" : "SELL", unit);
-        await logTransaction(sender, isAdd ? "ADD" : "SELL", finalItem, qty, finalUnit);
+        const { newQty, finalUnit, finalItem, isMerged, itemPrice } = await updateStock(sender, item, qty, isAdd ? "ADD" : "SELL", unit);
+        await logTransaction(sender, isAdd ? "ADD" : "SELL", finalItem, qty, finalUnit, itemPrice);
         
-        const successReply = isAdd ? reply.addSuccess(qty, capitalize(finalItem), newQty, finalUnit) : reply.soldSuccess(qty, capitalize(finalItem), newQty, finalUnit);
-        results.push(`✅ ${successReply}`);
+        if (isAdd && isMerged) {
+          results.push(`✅ ${reply.addSuccessWithMerge(qty, finalUnit, item, capitalize(finalItem), newQty)}`);
+        } else {
+          const successReply = isAdd ? reply.addSuccess(qty, capitalize(finalItem), newQty, finalUnit) : reply.soldSuccess(qty, capitalize(finalItem), newQty, finalUnit);
+          results.push(`✅ ${successReply}`);
+        }
         
         if (!isAdd && newQty <= 5) results.push(reply.lowStock(finalItem, newQty, finalUnit));
+        
+        // FEATURE 5C: Detect new items needing price
+        if (isAdd && itemPrice === 0) {
+          itemsNeedingPrice.push(finalItem);
+        }
         isAnyAction = true;
       }
-    } else if (effectiveAction === "inventory") {
+    } 
+    else if (effectiveAction === "bulk_add") {
+      isAnyAction = true;
+      for (const item of parsed.items) {
+        const { newQty, finalUnit, finalItem, itemPrice } = await updateStock(sender, item.item, item.quantity, "ADD", item.unit);
+        await logTransaction(sender, "ADD", finalItem, item.quantity, finalUnit, itemPrice);
+        results.push(`✅ ${reply.addSuccess(item.quantity, capitalize(finalItem), newQty, finalUnit)}`);
+        if (itemPrice === 0) itemsNeedingPrice.push(finalItem);
+      }
+    }
+    else if (effectiveAction === "inventory") {
       const inv = await getInventory(sender);
-      const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity} ${i.unit || ""}`.trim()).sort().join("\n");
+      const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity} ${i.unit || ""} (₹${i.price || 0})`.trim()).sort().join("\n");
       results.push(reply.inventoryHeader(ownerName) + "\n" + (list || "Empty"));
       isAnyAction = true;
-    } else if (effectiveAction === "report") {
+    } 
+    else if (effectiveAction === "report") {
       const logs = await getTodayTransactions(sender);
+      let totalRevenue = 0;
       const summary = logs.reduce((acc: any, l: any) => {
-        const k = `${l.action === "ADD" ? "Stocked" : "Sold"} ${capitalize(l.item)}`;
-        acc[k] = (acc[k] || { qty: 0, unit: l.unit || "" });
-        acc[k].qty += l.quantity;
+        const isSell = l.action === "SELL";
+        const label = isSell ? "🛒 Sold" : "📦 Stocked";
+        const key = `${label} ${capitalize(l.item)}`;
+        acc[key] = (acc[key] || { qty: 0, unit: l.unit || "", rev: 0 });
+        acc[key].qty += l.quantity;
+        if (isSell) {
+          const rev = l.revenue || (l.quantity * (l.price || 0));
+          acc[key].rev += rev;
+          totalRevenue += rev;
+        }
         return acc;
       }, {});
-      const text = Object.entries(summary).map(([k, v]: [string, any]) => `• ${k}: ${v.qty} ${v.unit}`.trim()).join("\n");
+      const text = Object.entries(summary).map(([k, v]: [string, any]) => {
+        const revText = v.rev > 0 ? ` (₹${v.rev})` : "";
+        return `• ${k}: ${v.qty} ${v.unit}${revText}`.trim();
+      }).join("\n");
       results.push(reply.reportHeader(ownerName) + "\n" + (text || "No activity"));
+      if (totalRevenue > 0) results.push(reply.reportRevenue(totalRevenue));
       isAnyAction = true;
     } else if (parsed.action !== "skip") {
       results.push(`⚠️ Artham kaaledu: "${line}"`);
@@ -165,10 +236,17 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   }
 
   if (isAnyAction && results.length > 0) {
-    await sendWhatsAppMessage(sender, (reply as any).bulkDone + "\n\n" + results.join("\n"));
+    await sendWhatsAppMessage(sender, results.join("\n"));
   }
+
+  // Handle follow-up for price
+  if (itemsNeedingPrice.length > 0) {
+    const lastItem = itemsNeedingPrice[itemsNeedingPrice.length - 1];
+    await setPendingPrice(sender, lastItem);
+    await sendWhatsAppMessage(sender, reply.askPrice(capitalize(lastItem)));
+  }
+
   res.status(200).json({ success: true });
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
-

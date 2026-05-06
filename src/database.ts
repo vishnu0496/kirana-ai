@@ -65,13 +65,15 @@ async function clearOnboardingState(phone: string): Promise<void> {
 
 async function updateStock(phone: string, item: string, quantity: number, action: "ADD" | "SELL", unit: string = "") {
   const inventorySnapshot = await db.collection("shops").doc(phone).collection("inventory").get();
-  const existingItems = inventorySnapshot.docs.map(d => (d.data() as any).name);
+  const existingDocs = inventorySnapshot.docs.map(d => ({ name: (d.data() as any).name, key: d.id }));
   
-  const fuzzyMatch = findFuzzyMatch(item, existingItems);
+  const fuzzyMatch = findFuzzyMatch(item, existingDocs.map(d => d.name));
   let finalItem = item;
+  let isMerged = false;
   if (fuzzyMatch && fuzzyMatch.toLowerCase() !== item.toLowerCase()) {
     console.log(`[FUZZY] Merged "${item}" → "${fuzzyMatch}"`);
     finalItem = fuzzyMatch;
+    isMerged = true;
   }
 
   const itemKey = finalItem.toLowerCase().trim();
@@ -79,13 +81,14 @@ async function updateStock(phone: string, item: string, quantity: number, action
   
   let newQty = 0;
   let finalUnit = unit;
+  let itemPrice = 0;
 
   await db.runTransaction(async (transaction) => {
     const itemDoc = await transaction.get(itemDocRef);
     const data = itemDoc.exists ? (itemDoc.data() as any) : null;
     const currentQty = data ? data.quantity : 0;
+    itemPrice = data ? (data.price || 0) : 0;
     
-    // If no unit provided, try to use existing unit
     if (!finalUnit && data && data.unit) {
       finalUnit = data.unit;
     }
@@ -101,7 +104,38 @@ async function updateStock(phone: string, item: string, quantity: number, action
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
   });
-  return { newQty, finalUnit, finalItem };
+  return { newQty, finalUnit, finalItem, isMerged, itemPrice };
+}
+
+async function setItemPrice(phone: string, item: string, price: number): Promise<void> {
+  const itemKey = item.toLowerCase().trim();
+  await db.collection("shops").doc(phone).collection("inventory").doc(itemKey).set({
+    price: price,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  }, { merge: true });
+}
+
+async function getItemPrice(phone: string, item: string): Promise<number | null> {
+  const itemKey = item.toLowerCase().trim();
+  const doc = await db.collection("shops").doc(phone).collection("inventory").doc(itemKey).get();
+  return doc.exists ? (doc.data() as any).price || null : null;
+}
+
+async function getPendingPrice(phone: string): Promise<string | null> {
+  const doc = await db.collection("shops").doc(phone).collection("profile").doc("info").get();
+  return doc.exists ? (doc.data() as any).pendingPriceFor || null : null;
+}
+
+async function setPendingPrice(phone: string, item: string): Promise<void> {
+  await db.collection("shops").doc(phone).collection("profile").doc("info").set({
+    pendingPriceFor: item
+  }, { merge: true });
+}
+
+async function clearPendingPrice(phone: string): Promise<void> {
+  await db.collection("shops").doc(phone).collection("profile").doc("info").set({
+    pendingPriceFor: admin.firestore.FieldValue.delete()
+  }, { merge: true });
 }
 
 async function getInventory(phone: string) {
@@ -109,13 +143,15 @@ async function getInventory(phone: string) {
   return snapshot.docs.map(doc => doc.data());
 }
 
-async function logTransaction(phone: string, action: string, item: string, quantity: number, unit: string = "") {
+async function logTransaction(phone: string, action: string, item: string, quantity: number, unit: string = "", price: number = 0) {
   const logsRef = db.collection("shops").doc(phone).collection("logs");
   await logsRef.add({
     action,
     item,
     quantity,
     unit,
+    price,
+    revenue: action === "SELL" ? (quantity * price) : 0,
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 }
@@ -137,8 +173,14 @@ export {
   setOnboardingState,
   clearOnboardingState,
   updateStock, 
+  setItemPrice,
+  getItemPrice,
+  getPendingPrice,
+  setPendingPrice,
+  clearPendingPrice,
   getInventory, 
   logTransaction, 
   getTodayTransactions 
 };
+
 

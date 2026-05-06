@@ -53,17 +53,19 @@ const inventoryWords = [
   "inventory","show inventory","stock list","show stock",
   "show list","check stock","how much","how many",
   "what do i have","balance","remaining","total","stock","list",
+  "low stock","low","reorder","order list",
   // Telugu (Tenglish)
   "inventory chupandi","stock chupandi","nilava cheppandi",
   "nilava","emunnayi","em undi","chupandi","sarukulu chupandi",
   "meeru stock","enni unnai","enni unnai","list cheppu","cheppandi",
   "entha undi","entha unnai","enti undi","stock entha","entha stoku",
-  "chupandi","meeru","nilava undi",
+  "chupandi","meeru","nilava undi","takkuva stock","order cheyyali","enni takkuva",
+  "stock takkuva emi undi",
   // Hindi (Hinglish)
   "inventory dikao","stock dikao","list dikao",
   "kya hai","kitna hai","kitna bacha","kya bacha",
   "maal dikao","sab dikao","hisaab","stock batao",
-  "poora stock","kitna maal"
+  "poora stock","kitna maal","kam stock","kya order karna"
 ];
 
 const reportWords = [
@@ -81,6 +83,8 @@ const reportWords = [
   "aaj kitna bika","aaj ki bikri","aaj ka total",
   "din ka report","sales batao","kitna kamaya","aaj ka hisaab"
 ];
+
+const priceWords = ["price","cost","rate","dam","bhaav","dhara","rs","rupees","rupee","₹","roju","bagundi"];
 
 function cleanItemName(raw: string): string {
   const allVerbs = [...addVerbs, ...soldVerbs,
@@ -157,28 +161,44 @@ function smartParse(message: string): any {
   if (greetingWords.some(w => msg === w || msg.startsWith(w + " ")))
     return { action: "greeting" };
 
-  // 3. INVENTORY — standalone keywords
+  // 3. LOW STOCK COMMAND
+  if (/low\s*stock|takkuva\s*stock|kam\s*stock|reorder/.test(msg))
+    return { action: "low_stock" };
+
+  // 4. INVENTORY — standalone keywords
   if (msg === "stock" || msg === "list" || msg === "nilava" || msg === "inventory" || msg === "maal" || inventoryWords.some(w => msg.includes(w)))
     return { action: "inventory" };
 
-  // 4. REPORT — check before number-based parsing
+  // 5. REPORT — check before number-based parsing
   if (reportWords.some(w => msg.includes(w)))
     return { action: "report" };
 
-  // 5. BULK ADD — "add 10 soaps 5 chips 3 oil"
-  const bulkPairs = [...msg.matchAll(/(\d+)\s+([a-z]+)/g)];
-  if (msg.startsWith("add") && bulkPairs.length >= 2) {
+  // 6. PRICE SETTING COMMAND
+  const priceMatch = msg.match(
+    /(?:price|cost|rate|dam|bhaav|dhara|roju)\s+(?:of\s+)?(.+?)\s+(?:is\s+)?(?:rs\.?|₹)?\s*(\d+)/i
+  ) || msg.match(
+    /(.+?)\s+(?:rs\.?|₹)\s*(\d+)/i
+  );
+  if (priceMatch && !msg.match(/\d+\s*[a-z]/)) { // Avoid matching "10 soaps"
+    const item = cleanItemName(priceMatch[1]);
+    const price = parseInt(priceMatch[2]);
+    if (item && price) return { action: "set_price", item, price };
+  }
+
+  // 7. BULK ADD — unit aware regex
+  const bulkMatches = [...msg.matchAll(/(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|pkts|box|boxes|bottle|btl|pcs?|dozen|bag|roll)?\s+([a-z][a-z\s]*?)(?=\s*\d|$)/gi)];
+  if (msg.startsWith("add") && bulkMatches.length >= 2) {
     return {
       action: "bulk_add",
-      items: bulkPairs.map(p => ({
-        quantity: parseInt(p[1]),
-        item: cleanItemName(p[2])
+      items: bulkMatches.map(m => ({
+        quantity: parseInt(m[1]),
+        unit: m[2] || "",
+        item: cleanItemName(m[3])
       }))
     };
   }
 
-  // 6. FIND NUMBER + UNIT + ITEM (Number-First)
-  // Updated regex: optional unit capture
+  // 8. FIND NUMBER + UNIT + ITEM (Number-First)
   const numMatch = msg.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i);
   if (numMatch) {
     const qty = parseInt(numMatch[1]);
@@ -189,7 +209,7 @@ function smartParse(message: string): any {
     return { action: "add", quantity: qty, unit, item };
   }
 
-  // 7. SUPPORT NUMBER-LAST FORMAT
+  // 9. SUPPORT NUMBER-LAST FORMAT
   const numLastMatch = msg.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
   if (numLastMatch) {
     const item = cleanItemName(numLastMatch[1].trim());
@@ -211,6 +231,6 @@ export {
   soldVerbs,
   greetingWords,
   inventoryWords,
-  reportWords
+  reportWords,
+  priceWords
 };
-
