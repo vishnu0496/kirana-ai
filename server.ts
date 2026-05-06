@@ -255,6 +255,17 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           continue;
         }
 
+        // FIX 2: Revenue lazy lookup for items sold before price was set
+        for (const l of logs) {
+          if (l.action === "SELL" && !l.revenue && l.item) {
+            const currentPrice = await getItemPrice(sender, l.item);
+            if (currentPrice) {
+              l.price = currentPrice;
+              l.revenue = l.quantity * currentPrice;
+            }
+          }
+        }
+
         let totalRevenue = 0;
         const summary = logs.reduce((acc: any, l: any) => {
           const isSell = l.action === "SELL";
@@ -263,7 +274,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           acc[key] = (acc[key] || { qty: 0, unit: l.unit || "", rev: 0 });
           acc[key].qty += l.quantity;
           if (isSell) {
-            const rev = l.revenue || (l.quantity * (l.price || 0));
+            const rev = l.revenue || 0;
             acc[key].rev += rev;
             totalRevenue += rev;
           }

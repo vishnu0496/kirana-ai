@@ -166,7 +166,7 @@ async function logTransaction(phone: string, action: string, item: string, quant
     unit,
     price,
     revenue: action === "SELL" ? (quantity * price) : 0,
-    timestamp: admin.firestore.FieldValue.serverTimestamp()
+    timestamp: admin.firestore.Timestamp.fromDate(new Date())
   });
 }
 
