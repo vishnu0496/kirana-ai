@@ -167,9 +167,12 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       
       let effectiveAction = parsed.action;
       const lower = line.toLowerCase();
-      if (soldVerbs.some(v => lower.includes(v))) effectiveAction = "sold";
-      else if (addVerbs.some(v => lower.includes(v))) effectiveAction = "add";
-      else if (contextAction && ["add", "sold", "unknown", "not_understood"].includes(parsed.action)) effectiveAction = contextAction;
+      // Only override with sold/add verbs if the current intent is generic or already an update
+      if (["unknown", "not_understood", "add", "sold"].includes(parsed.action)) {
+        if (soldVerbs.some(v => lower.includes(v))) effectiveAction = "sold";
+        else if (addVerbs.some(v => lower.includes(v))) effectiveAction = "add";
+        else if (contextAction) effectiveAction = contextAction;
+      }
 
       if (effectiveAction === "greeting") {
         results.push(reply.greeting(ownerName));
