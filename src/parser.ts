@@ -154,7 +154,8 @@ function smartParse(message: string): any {
   const msg = message.toLowerCase().trim();
 
   // 1. SKIP HEADER LINES
-  if (/^(add|sold|stock|restock|update):?\s*$/.test(msg))
+  // Skip ONLY if line is just a verb with no digits
+  if (/^(add|sold|stock|restock|update):?\s*$/.test(msg) && !/\d/.test(msg))
     return { action: "skip" };
 
   // 2. GREETING — exact match from list

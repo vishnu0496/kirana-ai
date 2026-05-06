@@ -22,6 +22,21 @@ const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
+process.on("SIGTERM", () => {
+  console.log("[SERVER] SIGTERM received, shutting down gracefully");
+  process.exit(0);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[SERVER] Uncaught exception:", err.message);
+  // Don't crash — log and continue
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[SERVER] Unhandled rejection:", reason);
+  // Don't crash — log and continue
+});
+
 const genAI = new GoogleGenerativeAI(GEMINI_KEY || "");
 const app = express();
 app.use(bodyParser.json());
@@ -121,125 +136,134 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     await clearPendingPrice(sender); // User sent something else, skip price
   }
 
-  const lines = messageText.split("\n").filter(l => l.trim() !== "");
+  const lines = messageText.split("\n").map(l => l.trim()).filter(Boolean);
   let results: string[] = [], isAnyAction = false, contextAction: "add" | "sold" | null = null;
   let itemsNeedingPrice: string[] = [];
 
-  for (const line of lines) {
-    const parsed = await parseMessage(line);
-    console.log("[PARSE]", line, "->", parsed.action);
-    if (parsed.action === "skip") {
+  try {
+    for (const line of lines) {
+      const parsed = await parseMessage(line);
+      console.log("[PARSE]", line, "->", parsed.action);
+      if (parsed.action === "skip") {
+        const lower = line.toLowerCase();
+        if (lower.includes("sold")) contextAction = "sold";
+        else if (lower.includes("add")) contextAction = "add";
+        continue;
+      }
+      
+      let effectiveAction = parsed.action;
       const lower = line.toLowerCase();
-      if (lower.includes("sold")) contextAction = "sold";
-      else if (lower.includes("add")) contextAction = "add";
-      continue;
-    }
-    
-    let effectiveAction = parsed.action;
-    const lower = line.toLowerCase();
-    if (soldVerbs.some(v => lower.includes(v))) effectiveAction = "sold";
-    else if (addVerbs.some(v => lower.includes(v))) effectiveAction = "add";
-    else if (contextAction && ["add", "sold", "unknown", "not_understood"].includes(parsed.action)) effectiveAction = contextAction;
+      if (soldVerbs.some(v => lower.includes(v))) effectiveAction = "sold";
+      else if (addVerbs.some(v => lower.includes(v))) effectiveAction = "add";
+      else if (contextAction && ["add", "sold", "unknown", "not_understood"].includes(parsed.action)) effectiveAction = contextAction;
 
-    if (effectiveAction === "greeting") {
-      results.push(reply.greeting(ownerName));
-      isAnyAction = true;
-    } 
-    else if (effectiveAction === "set_price") {
-      await setItemPrice(sender, parsed.item, parsed.price);
-      results.push(reply.priceSetSuccess(capitalize(parsed.item), parsed.price));
-      isAnyAction = true;
-    }
-    else if (effectiveAction === "low_stock") {
-      const inv = await getInventory(sender);
-      const lowItems = inv.filter((i: any) => i.quantity < 5).sort((a, b) => a.name.localeCompare(b.name));
-      if (lowItems.length === 0) {
-        results.push(reply.noLowStock(ownerName));
-      } else {
-        results.push(reply.lowStockHeader(ownerName));
-        lowItems.forEach((i: any) => results.push(reply.lowStockItem(capitalize(i.name), i.quantity, i.unit || "")));
+      if (effectiveAction === "greeting") {
+        results.push(reply.greeting(ownerName));
+        isAnyAction = true;
+      } 
+      else if (effectiveAction === "set_price") {
+        await setItemPrice(sender, parsed.item, parsed.price);
+        results.push(reply.priceSetSuccess(capitalize(parsed.item), parsed.price));
+        isAnyAction = true;
       }
-      isAnyAction = true;
-    }
-    else if (["add", "sold"].includes(effectiveAction) && (parsed.item || line.match(/\d/))) {
-      let item = parsed.item, qty = parsed.quantity, unit = parsed.unit || "";
-      if (!item) {
-        const m = line.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
-        if (m) { 
-          qty = parseInt(m[1].match(/\d+/) ? m[1] : (m[3] ? m[3] : m[2]));
-          unit = m[1].match(/\d+/) ? (m[2] || "") : "";
-          item = cleanItemName(m[1].match(/\d+/) ? m[3] : m[1]); 
-        }
-      }
-      if (item && qty) {
-        const isAdd = effectiveAction === "add";
-        const { newQty, finalUnit, finalItem, isMerged, itemPrice } = await updateStock(sender, item, qty, isAdd ? "ADD" : "SELL", unit);
-        await logTransaction(sender, isAdd ? "ADD" : "SELL", finalItem, qty, finalUnit, itemPrice);
-        
-        if (isAdd && isMerged) {
-          results.push(`✅ ${reply.addSuccessWithMerge(qty, finalUnit, item, capitalize(finalItem), newQty)}`);
+      else if (effectiveAction === "low_stock") {
+        const inv = await getInventory(sender);
+        const lowItems = inv.filter((i: any) => i.quantity < 5).sort((a, b) => a.name.localeCompare(b.name));
+        if (lowItems.length === 0) {
+          results.push(reply.noLowStock(ownerName));
         } else {
-          const successReply = isAdd ? reply.addSuccess(qty, capitalize(finalItem), newQty, finalUnit) : reply.soldSuccess(qty, capitalize(finalItem), newQty, finalUnit);
-          results.push(`✅ ${successReply}`);
-        }
-        
-        if (!isAdd && newQty <= 5) results.push(reply.lowStock(finalItem, newQty, finalUnit));
-        
-        // FEATURE 5C: Detect new items needing price
-        if (isAdd && itemPrice === 0) {
-          itemsNeedingPrice.push(finalItem);
+          results.push(reply.lowStockHeader(ownerName));
+          lowItems.forEach((i: any) => results.push(reply.lowStockItem(capitalize(i.name), i.quantity, i.unit || "")));
         }
         isAnyAction = true;
       }
-    } 
-    else if (effectiveAction === "bulk_add") {
-      isAnyAction = true;
-      for (const item of parsed.items) {
-        const { newQty, finalUnit, finalItem, itemPrice } = await updateStock(sender, item.item, item.quantity, "ADD", item.unit);
-        await logTransaction(sender, "ADD", finalItem, item.quantity, finalUnit, itemPrice);
-        results.push(`✅ ${reply.addSuccess(item.quantity, capitalize(finalItem), newQty, finalUnit)}`);
-        if (itemPrice === 0) itemsNeedingPrice.push(finalItem);
+      else if (["add", "sold"].includes(effectiveAction) && (parsed.item || line.match(/\d/))) {
+        let item = parsed.item, qty = parsed.quantity, unit = parsed.unit || "";
+        if (!item) {
+          const m = line.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
+          if (m) { 
+            qty = parseInt(m[1].match(/\d+/) ? m[1] : (m[3] ? m[3] : m[2]));
+            unit = m[1].match(/\d+/) ? (m[2] || "") : "";
+            item = cleanItemName(m[1].match(/\d+/) ? m[3] : m[1]); 
+          }
+        }
+        if (item && qty) {
+          const isAdd = effectiveAction === "add";
+          const { newQty, finalUnit, finalItem, isMerged, itemPrice } = await updateStock(sender, item, qty, isAdd ? "ADD" : "SELL", unit);
+          await logTransaction(sender, isAdd ? "ADD" : "SELL", finalItem, qty, finalUnit, itemPrice);
+          
+          if (isAdd && isMerged) {
+            results.push(`✅ ${reply.addSuccessWithMerge(qty, finalUnit, item, capitalize(finalItem), newQty)}`);
+          } else {
+            const successReply = isAdd ? reply.addSuccess(qty, capitalize(finalItem), newQty, finalUnit) : reply.soldSuccess(qty, capitalize(finalItem), newQty, finalUnit);
+            results.push(`✅ ${successReply}`);
+          }
+          
+          if (!isAdd && newQty <= 5) results.push(reply.lowStock(finalItem, newQty, finalUnit));
+          
+          if (isAdd && itemPrice === 0) {
+            itemsNeedingPrice.push(finalItem);
+          }
+          isAnyAction = true;
+        }
+      } 
+      else if (effectiveAction === "bulk_add") {
+        isAnyAction = true;
+        for (const item of parsed.items) {
+          const { newQty, finalUnit, finalItem, itemPrice } = await updateStock(sender, item.item, item.quantity, "ADD", item.unit);
+          await logTransaction(sender, "ADD", finalItem, item.quantity, finalUnit, itemPrice);
+          results.push(`✅ ${reply.addSuccess(item.quantity, capitalize(finalItem), newQty, finalUnit)}`);
+          if (itemPrice === 0) itemsNeedingPrice.push(finalItem);
+        }
+      }
+      else if (effectiveAction === "inventory") {
+        const inv = await getInventory(sender);
+        const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity} ${i.unit || ""} (₹${i.price || 0})`.trim()).sort().join("\n");
+        results.push(reply.inventoryHeader(ownerName) + "\n" + (list || "Empty"));
+        isAnyAction = true;
+      } 
+      else if (effectiveAction === "report") {
+        const logs = await getTodayTransactions(sender);
+        let totalRevenue = 0;
+        const summary = logs.reduce((acc: any, l: any) => {
+          const isSell = l.action === "SELL";
+          const label = isSell ? "🛒 Sold" : "📦 Stocked";
+          const key = `${label} ${capitalize(l.item)}`;
+          acc[key] = (acc[key] || { qty: 0, unit: l.unit || "", rev: 0 });
+          acc[key].qty += l.quantity;
+          if (isSell) {
+            const rev = l.revenue || (l.quantity * (l.price || 0));
+            acc[key].rev += rev;
+            totalRevenue += rev;
+          }
+          return acc;
+        }, {});
+        const text = Object.entries(summary).map(([k, v]: [string, any]) => {
+          const revText = v.rev > 0 ? ` (₹${v.rev})` : "";
+          return `• ${k}: ${v.qty} ${v.unit}${revText}`.trim();
+        }).join("\n");
+        results.push(reply.reportHeader(ownerName) + "\n" + (text || "No activity"));
+        if (totalRevenue > 0) results.push(reply.reportRevenue(totalRevenue));
+        isAnyAction = true;
+      } else if (parsed.action !== "skip") {
+        results.push(`⚠️ Artham kaaledu: "${line}"`);
       }
     }
-    else if (effectiveAction === "inventory") {
-      const inv = await getInventory(sender);
-      const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity} ${i.unit || ""} (₹${i.price || 0})`.trim()).sort().join("\n");
-      results.push(reply.inventoryHeader(ownerName) + "\n" + (list || "Empty"));
-      isAnyAction = true;
-    } 
-    else if (effectiveAction === "report") {
-      const logs = await getTodayTransactions(sender);
-      let totalRevenue = 0;
-      const summary = logs.reduce((acc: any, l: any) => {
-        const isSell = l.action === "SELL";
-        const label = isSell ? "🛒 Sold" : "📦 Stocked";
-        const key = `${label} ${capitalize(l.item)}`;
-        acc[key] = (acc[key] || { qty: 0, unit: l.unit || "", rev: 0 });
-        acc[key].qty += l.quantity;
-        if (isSell) {
-          const rev = l.revenue || (l.quantity * (l.price || 0));
-          acc[key].rev += rev;
-          totalRevenue += rev;
-        }
-        return acc;
-      }, {});
-      const text = Object.entries(summary).map(([k, v]: [string, any]) => {
-        const revText = v.rev > 0 ? ` (₹${v.rev})` : "";
-        return `• ${k}: ${v.qty} ${v.unit}${revText}`.trim();
-      }).join("\n");
-      results.push(reply.reportHeader(ownerName) + "\n" + (text || "No activity"));
-      if (totalRevenue > 0) results.push(reply.reportRevenue(totalRevenue));
-      isAnyAction = true;
-    } else if (parsed.action !== "skip") {
-      results.push(`⚠️ Artham kaaledu: "${line}"`);
-    }
+  } catch (err: any) {
+    console.error("[MULTILINE ERROR]", err.message);
+    await sendWhatsAppMessage(sender, reply.notUnderstood);
   }
 
   if (isAnyAction && results.length > 0) {
-    await sendWhatsAppMessage(sender, results.join("\n"));
+    // Only enter multi-line mode (with bulk header) if 2+ meaningful actions happened
+    const meaningfulActions = results.filter(r => !r.includes("Hey") && !r.includes("Baagundi") && !r.includes("Kya haal"));
+    if (meaningfulActions.length >= 2) {
+      await sendWhatsAppMessage(sender, reply.bulkDone + "\n\n" + results.join("\n"));
+    } else {
+      await sendWhatsAppMessage(sender, results.join("\n"));
+    }
   }
 
-  // Handle follow-up for price
   if (itemsNeedingPrice.length > 0) {
     const lastItem = itemsNeedingPrice[itemsNeedingPrice.length - 1];
     await setPendingPrice(sender, lastItem);
@@ -250,3 +274,4 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
+
