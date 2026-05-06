@@ -174,19 +174,39 @@ function smartParse(message: string): any {
   if (reportWords.some(w => msg.includes(w)))
     return { action: "report" };
 
-  // 6. PRICE SETTING COMMAND
+  // 6. PRICE UPDATE COMMAND DETECTION
+  const priceUpdatePatterns = [
+    /^(.+?)\s+(?:price|rate|dam|bhaav|dhara|cost)\s+(?:rs\.?|₹)?\s*(\d+)$/i,
+    /^(?:price|rate|update price)\s+(?:of\s+)?(.+?)\s+(?:is\s+)?(?:rs\.?|₹)?\s*(\d+)$/i,
+    /^(?:rs\.?|₹)\s*(\d+)\s+(.+)$/i,
+  ];
+
+  for (const pattern of priceUpdatePatterns) {
+    const m = msg.match(pattern);
+    if (m) {
+      const item = pattern === priceUpdatePatterns[2] 
+        ? cleanItemName(m[2]) 
+        : cleanItemName(m[1]);
+      const price = parseInt(
+        pattern === priceUpdatePatterns[2] ? m[1] : m[2]
+      );
+      if (item && !isNaN(price)) return { action: "set_price", item, price };
+    }
+  }
+
+  // 7. LEGACY PRICE SETTING (Maintain for fallback)
   const priceMatch = msg.match(
     /(?:price|cost|rate|dam|bhaav|dhara|roju)\s+(?:of\s+)?(.+?)\s+(?:is\s+)?(?:rs\.?|₹)?\s*(\d+)/i
   ) || msg.match(
     /(.+?)\s+(?:rs\.?|₹)\s*(\d+)/i
   );
-  if (priceMatch && !msg.match(/\d+\s*[a-z]/)) { // Avoid matching "10 soaps"
+  if (priceMatch && !msg.match(/\d+\s*[a-z]/)) { 
     const item = cleanItemName(priceMatch[1]);
     const price = parseInt(priceMatch[2]);
     if (item && price) return { action: "set_price", item, price };
   }
 
-  // 7. BULK ADD — unit aware regex
+  // 8. BULK ADD — unit aware regex
   const bulkMatches = [...msg.matchAll(/(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|pkts|box|boxes|bottle|btl|pcs?|dozen|bag|roll)?\s+([a-z][a-z\s]*?)(?=\s*\d|$)/gi)];
   const hasAddVerb = addVerbs.some(v => msg.includes(v));
   if (hasAddVerb && bulkMatches.length >= 2) {

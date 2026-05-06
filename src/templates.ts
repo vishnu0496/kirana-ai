@@ -25,8 +25,10 @@ const replyTemplates = {
     lowStockItem: (item: string, qty: number, unit: string) => `⚠️ ${item}: only ${qty}${unit ? " "+unit : ""} left`,
     noLowStock: (name: string) => `${name}, all items have good stock! 🟢`,
     reportRevenue: (total: number) => `💰 Total revenue: ₹${total}`,
-    askPrice: (item: string) => `What is the selling price of ${item}? (Reply: price ${item} ₹40)`,
-    priceSetSuccess: (item: string, price: number) => `✅ Price for ${item} set to ₹${price}`,
+    askPrice: (item: string) => `What is the selling price of ${item}? (e.g. reply: 40)`,
+    priceConfirmed: (item: string, price: number) => `✅ ${item} price saved: ₹${price}`,
+    askPriceAgain: (item: string) => `Please reply with just the price number for ${item} (e.g. 40)`,
+    priceUpdated: (item: string, price: number) => `✅ ${item} price updated to ₹${price}`,
     greeting: (name: string) =>
       `Hey ${name}! 👋 How can I help?\nTry: 'add 10 soaps' or 'show inventory'`,
     notUnderstood:
@@ -62,8 +64,10 @@ const replyTemplates = {
     lowStockItem: (item: string, qty: number, unit: string) => `⚠️ ${item}: kevalam ${qty}${unit ? " "+unit : ""} undhi`,
     noLowStock: (name: string) => `${name} anna, anni items stock bagundi! 🟢`,
     reportRevenue: (total: number) => `💰 Mottam aaya: ₹${total}`,
-    askPrice: (item: string) => `${item} amme dhara enti? (Reply: ${item} dam 40)`,
-    priceSetSuccess: (item: string, price: number) => `✅ ${item} dhara ₹${price} ga set chesamu`,
+    askPrice: (item: string) => `${item} amme dhara enti? (e.g. reply: 40)`,
+    priceConfirmed: (item: string, price: number) => `✅ ${item} dhara save chesamu: ₹${price}`,
+    askPriceAgain: (item: string) => `${item} dhara number lo cheppandi (e.g. 40)`,
+    priceUpdated: (item: string, price: number) => `✅ ${item} dhara update chesamu: ₹${price}`,
     greeting: (name: string) =>
       `Baagundi ${name} anna! 👋 Ela help cheyyali?\nTry: 'add 10 soaps' or 'show inventory'`,
     notUnderstood:
@@ -99,8 +103,10 @@ const replyTemplates = {
     lowStockItem: (item: string, qty: number, unit: string) => `⚠️ ${item}: sirf ${qty}${unit ? " "+unit : ""} bacha`,
     noLowStock: (name: string) => `${name} bhai, sab items ka stock theek hai! 🟢`,
     reportRevenue: (total: number) => `💰 Kul kamai: ₹${total}`,
-    askPrice: (item: string) => `${item} ka selling price kya hai? (Reply: ${item} rate 40)`,
-    priceSetSuccess: (item: string, price: number) => `✅ ${item} ka rate ₹${price} set ho gaya`,
+    askPrice: (item: string) => `${item} ka selling price kya hai? (e.g. reply: 40)`,
+    priceConfirmed: (item: string, price: number) => `✅ ${item} price save ho gaya: ₹${price}`,
+    askPriceAgain: (item: string) => `Sirf number mein price batayein ${item} ka (e.g. 40)`,
+    priceUpdated: (item: string, price: number) => `✅ ${item} ka price update ho gaya: ₹${price}`,
     greeting: (name: string) =>
       `Kya haal hai ${name} bhai! 👋 Kya help chahiye?\nTry: 'add 10 soaps' ya 'show inventory'`,
     notUnderstood:

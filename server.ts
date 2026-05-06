@@ -11,7 +11,7 @@ import {
   getUser, saveUser, updateStock, getInventory, 
   logTransaction, getTodayTransactions,
   getOnboardingState, setOnboardingState, clearOnboardingState,
-  setItemPrice, getItemPrice, getPendingPrice, setPendingPrice, clearPendingPrice
+  setItemPrice, getItemPrice, getPriceQueue, addToPriceQueue, shiftPriceQueue
 } from "./src/database";
 
 dotenv.config();
@@ -124,21 +124,35 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 
   const reply = getReply(lang), ownerName = (profile.ownerName || "Owner").split(" ")[0];
 
-  // FEATURE 5C: Handle pending price response
-  const pendingItem = await getPendingPrice(sender);
-  if (pendingItem && /^\d+$/.test(messageText.trim())) {
-    const price = parseInt(messageText.trim());
-    await setItemPrice(sender, pendingItem, price);
-    await clearPendingPrice(sender);
-    await sendWhatsAppMessage(sender, reply.priceSetSuccess(capitalize(pendingItem), price));
-    return res.sendStatus(200);
-  } else if (pendingItem) {
-    await clearPendingPrice(sender); // User sent something else, skip price
+  // FIX 1 & 3: Handle pricing queue
+  const priceQueue = await getPriceQueue(sender);
+  if (priceQueue.length > 0) {
+    const priceMatch = messageText.match(/(\d+)/);
+    const price = priceMatch ? parseInt(priceMatch[1]) : null;
+
+    if (price !== null) {
+      const itemName = await shiftPriceQueue(sender);
+      if (itemName) {
+        await setItemPrice(sender, itemName, price);
+        await sendWhatsAppMessage(sender, reply.priceConfirmed(capitalize(itemName), price));
+        
+        // Check for next item in queue
+        const remaining = await getPriceQueue(sender);
+        if (remaining.length > 0) {
+          await sendWhatsAppMessage(sender, reply.askPrice(capitalize(remaining[0])));
+        }
+        return res.sendStatus(200);
+      }
+    } else {
+      // User sent something but we need a price for the current item in queue
+      await sendWhatsAppMessage(sender, reply.askPriceAgain(capitalize(priceQueue[0])));
+      return res.sendStatus(200);
+    }
   }
 
   const lines = messageText.split("\n").map(l => l.trim()).filter(Boolean);
   let results: string[] = [], isAnyAction = false, contextAction: "add" | "sold" | null = null;
-  let itemsNeedingPrice: string[] = [];
+  let itemsAddedToQueue = false;
 
   try {
     for (const line of lines) {
@@ -163,7 +177,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       } 
       else if (effectiveAction === "set_price") {
         await setItemPrice(sender, parsed.item, parsed.price);
-        results.push(reply.priceSetSuccess(capitalize(parsed.item), parsed.price));
+        results.push(reply.priceUpdated(capitalize(parsed.item), parsed.price));
         isAnyAction = true;
       }
       else if (effectiveAction === "low_stock") {
@@ -180,7 +194,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       else if (["add", "sold"].includes(effectiveAction) && (parsed.item || line.match(/\d/))) {
         let item = parsed.item, qty = parsed.quantity, unit = parsed.unit || "";
         if (!item) {
-          const m = line.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
+          const m = line.match(/(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
           if (m) { 
             qty = parseInt(m[1].match(/\d+/) ? m[1] : (m[3] ? m[3] : m[2]));
             unit = m[1].match(/\d+/) ? (m[2] || "") : "";
@@ -201,8 +215,12 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           
           if (!isAdd && newQty <= 5) results.push(reply.lowStock(finalItem, newQty, finalUnit));
           
-          if (isAdd && itemPrice === 0) {
-            itemsNeedingPrice.push(finalItem);
+          if (isAdd) {
+            const existingPrice = await getItemPrice(sender, finalItem);
+            if (!existingPrice) {
+              await addToPriceQueue(sender, finalItem);
+              itemsAddedToQueue = true;
+            }
           }
           isAnyAction = true;
         }
@@ -210,10 +228,14 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       else if (effectiveAction === "bulk_add") {
         isAnyAction = true;
         for (const item of parsed.items) {
-          const { newQty, finalUnit, finalItem, itemPrice } = await updateStock(sender, item.item, item.quantity, "ADD", item.unit);
-          await logTransaction(sender, "ADD", finalItem, item.quantity, finalUnit, itemPrice);
+          const { newQty, finalUnit, finalItem } = await updateStock(sender, item.item, item.quantity, "ADD", item.unit);
+          const existingPrice = await getItemPrice(sender, finalItem);
+          await logTransaction(sender, "ADD", finalItem, item.quantity, finalUnit, existingPrice || 0);
           results.push(`✅ ${reply.addSuccess(item.quantity, capitalize(finalItem), newQty, finalUnit)}`);
-          if (itemPrice === 0) itemsNeedingPrice.push(finalItem);
+          if (!existingPrice) {
+            await addToPriceQueue(sender, finalItem);
+            itemsAddedToQueue = true;
+          }
         }
       }
       else if (effectiveAction === "inventory") {
@@ -255,7 +277,6 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   }
 
   if (isAnyAction && results.length > 0) {
-    // Only enter multi-line mode (with bulk header) if 2+ meaningful actions happened
     const meaningfulActions = results.filter(r => !r.includes("Hey") && !r.includes("Baagundi") && !r.includes("Kya haal"));
     if (meaningfulActions.length >= 2) {
       await sendWhatsAppMessage(sender, reply.bulkDone + "\n\n" + results.join("\n"));
@@ -264,14 +285,15 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     }
   }
 
-  if (itemsNeedingPrice.length > 0) {
-    const lastItem = itemsNeedingPrice[itemsNeedingPrice.length - 1];
-    await setPendingPrice(sender, lastItem);
-    await sendWhatsAppMessage(sender, reply.askPrice(capitalize(lastItem)));
+  // If new items were added that need prices, ask for the first one in the queue
+  if (itemsAddedToQueue) {
+    const currentQueue = await getPriceQueue(sender);
+    if (currentQueue.length > 0) {
+      await sendWhatsAppMessage(sender, reply.askPrice(capitalize(currentQueue[0])));
+    }
   }
 
   res.status(200).json({ success: true });
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
-

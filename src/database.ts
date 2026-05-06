@@ -121,21 +121,35 @@ async function getItemPrice(phone: string, item: string): Promise<number | null>
   return doc.exists ? (doc.data() as any).price || null : null;
 }
 
-async function getPendingPrice(phone: string): Promise<string | null> {
+async function getPriceQueue(phone: string): Promise<string[]> {
   const doc = await db.collection("shops").doc(phone).collection("profile").doc("info").get();
-  return doc.exists ? (doc.data() as any).pendingPriceFor || null : null;
+  return doc.exists ? (doc.data() as any).pendingPriceFor || [] : [];
 }
 
-async function setPendingPrice(phone: string, item: string): Promise<void> {
+async function addToPriceQueue(phone: string, itemName: string): Promise<void> {
   await db.collection("shops").doc(phone).collection("profile").doc("info").set({
-    pendingPriceFor: item
+    pendingPriceFor: admin.firestore.FieldValue.arrayUnion(itemName)
   }, { merge: true });
 }
 
-async function clearPendingPrice(phone: string): Promise<void> {
-  await db.collection("shops").doc(phone).collection("profile").doc("info").set({
-    pendingPriceFor: admin.firestore.FieldValue.delete()
-  }, { merge: true });
+async function shiftPriceQueue(phone: string): Promise<string | null> {
+  const docRef = db.collection("shops").doc(phone).collection("profile").doc("info");
+  const doc = await docRef.get();
+  if (!doc.exists) return null;
+  
+  const queue = (doc.data() as any).pendingPriceFor || [];
+  if (queue.length === 0) return null;
+  
+  const shifted = queue[0];
+  const newQueue = queue.slice(1);
+  
+  if (newQueue.length === 0) {
+    await docRef.update({ pendingPriceFor: admin.firestore.FieldValue.delete() });
+  } else {
+    await docRef.update({ pendingPriceFor: newQueue });
+  }
+  
+  return shifted;
 }
 
 async function getInventory(phone: string) {
@@ -175,12 +189,13 @@ export {
   updateStock, 
   setItemPrice,
   getItemPrice,
-  getPendingPrice,
-  setPendingPrice,
-  clearPendingPrice,
+  getPriceQueue,
+  addToPriceQueue,
+  shiftPriceQueue,
   getInventory, 
   logTransaction, 
   getTodayTransactions 
 };
+
 
 
