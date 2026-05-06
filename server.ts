@@ -173,11 +173,13 @@ const inventoryWords = [
   // English
   "inventory","show inventory","stock list","show stock",
   "show list","check stock","how much","how many",
-  "what do i have","balance","remaining","total",
+  "what do i have","balance","remaining","total","stock","list",
   // Telugu (Tenglish)
   "inventory chupandi","stock chupandi","nilava cheppandi",
   "nilava","emunnayi","em undi","chupandi","sarukulu chupandi",
   "meeru stock","enni unnai","enni undi","list cheppu","cheppandi",
+  "entha undi","entha unnai","enti undi","stock entha","entha stoku",
+  "chupandi","meeru","nilava undi",
   // Hindi (Hinglish)
   "inventory dikao","stock dikao","list dikao",
   "kya hai","kitna hai","kitna bacha","kya bacha",
@@ -201,6 +203,19 @@ const reportWords = [
   "din ka report","sales batao","kitna kamaya","aaj ka hisaab"
 ];
 
+// ── BUG 1 FIX: Strip verbs from item name ──────────────────
+
+function cleanItemName(raw: string): string {
+  const allVerbs = [...addVerbs, ...soldVerbs];
+  let cleaned = raw.trim();
+  for (const verb of allVerbs) {
+    // Remove verb if it appears at start or end of item name
+    const re = new RegExp(`^${verb}\\s+|\\s+${verb}$|^${verb}$`, "i");
+    cleaned = cleaned.replace(re, "").trim();
+  }
+  return cleaned;
+}
+
 // ── SMART PARSER ───────────────────────────────────────────
 
 function smartParse(message: string): any {
@@ -210,8 +225,8 @@ function smartParse(message: string): any {
   if (greetingWords.some(w => msg === w || msg.startsWith(w + " ")))
     return { action: "greeting" };
 
-  // 2. INVENTORY — check before number-based parsing
-  if (inventoryWords.some(w => msg.includes(w)))
+  // 2. INVENTORY — BUG 2 FIX: handle standalone stock/list
+  if (msg === "stock" || msg === "list" || inventoryWords.some(w => msg.includes(w)))
     return { action: "inventory" };
 
   // 3. REPORT — check before number-based parsing
@@ -225,7 +240,7 @@ function smartParse(message: string): any {
       action: "bulk_add",
       items: bulkPairs.map(p => ({
         quantity: parseInt(p[1]),
-        item: p[2]
+        item: cleanItemName(p[2])
       }))
     };
   }
@@ -234,7 +249,7 @@ function smartParse(message: string): any {
   const numMatch = msg.match(/(\d+)\s*([a-z]+(?:\s[a-z]+)?)/);
   if (numMatch) {
     const qty = parseInt(numMatch[1]);
-    const item = numMatch[2].trim();
+    const item = cleanItemName(numMatch[2]);
     // Check if any sold verb exists in the message
     const isSold = soldVerbs.some(v => msg.includes(v));
     if (isSold) return { action: "sold", quantity: qty, item };
@@ -645,7 +660,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         ? reply.addSuccess(actionResult.quantity, actionResult.item, currentQty)
         : reply.soldSuccess(actionResult.quantity, actionResult.item, currentQty);
 
-      if (currentQty <= 5) {
+      // BUG 4 FIX: Low stock alert only for sold actions
+      if (!isAdd && currentQty <= 5) {
         finalReply += "\n\n" + reply.lowStock(actionResult.item, currentQty);
       }
     } 
@@ -669,7 +685,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         // BUG 3 FIX: Bulk add reply message format
         summaryLines.push(`• ${item.quantity} ${item.item} added (total: ${currentQty})`);
         
-        if (currentQty <= 5) {
+        // BUG 4 FIX: Low stock alert only for bulk_sold
+        if (!isAdd && currentQty <= 5) {
           lowStockAlerts.push(reply.lowStock(item.item, currentQty));
         }
       }
