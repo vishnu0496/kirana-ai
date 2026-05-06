@@ -119,77 +119,135 @@ function detectLanguage(message: string): Lang {
   return "english";
 }
 
-function ruleBasedParse(message: string): any {
+// ── RESEARCHED WORD LISTS ──────────────────────────────────
+
+const greetingWords = [
+  // English
+  "hi","hello","hey","hii","helo","sup","yo","howdy","wassup","whatsup",
+  "good morning","good evening","good afternoon","gm","ge","ga",
+  // Telugu
+  "namaskaram","namasthe","namaskar","ayya","anna","bava",
+  "em chestunnaru","bagunnara","bagunnava","em visheshalu","enti",
+  // Hindi
+  "namaste","namaskar","namastey","bhai","yaar","boss",
+  "kya haal","kaise ho","kya chal raha","sab theek","kya baat"
+];
+
+const addVerbs = [
+  // English
+  "add","added","adding","stock","restock","restocked","restocking",
+  "received","receive","got","get","came","come","brought","bring",
+  "purchase","purchased","buying","bought","arrived","arrive",
+  "loaded","load","filled","fill","inward","new stock","new batch",
+  // Telugu (Tenglish)
+  "vachayi","vachindi","vachenu","tesukuvachha","tecchaanu",
+  "pettandi","veyyandi","veyyi","konugoolu","konukonaamu","konnaamu",
+  "stoku","nilava","sarukulu","vachhayi","tecchaaru","load chesaamu",
+  // Hindi (Hinglish)
+  "aaya","aayi","aaye","mila","mili","mile","laya","layi","laye",
+  "mangaya","mangayi","purchase kiya","kharida","kharidi",
+  "rakho","rakha","daalo","daala","bharo","bhara",
+  "stock karo","stock kiya","aaya maal","maal aaya","naya maal","aa gaya"
+];
+
+const soldVerbs = [
+  // English
+  "sold","sell","selling","gone","went","finished","finish",
+  "out","gave","give","dispatched","dispatch",
+  "issued","issue","billed","bill","delivered","deliver",
+  "customer took","customer bought",
+  // Telugu (Tenglish)
+  "ammamu","ammindi","ammaru","ammaanu","ammadam","ammakaalu",
+  "ammina","ammanauten","ammutundi","iyyandi","ichhaamu","icchaanu",
+  "poyindi","ayipoyindi","ayipoyayi","teesindi","teesukunnaru",
+  "vikkindi","vikrayam",
+  // Hindi (Hinglish)
+  "becha","bechi","beche","bika","biki","bike",
+  "gaya","gayi","gaye","nikla","nikli","nikle",
+  "khatam","khatam hua","diya","diye","di","de diya",
+  "nikal gaya","bikri","bikayi","kharch hua",
+  "customer ko diya","sale hua","sell kiya","bech diya"
+];
+
+const inventoryWords = [
+  // English
+  "inventory","show inventory","stock list","show stock",
+  "show list","check stock","how much","how many",
+  "what do i have","balance","remaining","total",
+  // Telugu (Tenglish)
+  "inventory chupandi","stock chupandi","nilava cheppandi",
+  "nilava","emunnayi","em undi","chupandi","sarukulu chupandi",
+  "meeru stock","enni unnai","enni undi","list cheppu","cheppandi",
+  // Hindi (Hinglish)
+  "inventory dikao","stock dikao","list dikao",
+  "kya hai","kitna hai","kitna bacha","kya bacha",
+  "maal dikao","sab dikao","hisaab","stock batao",
+  "poora stock","kitna maal"
+];
+
+const reportWords = [
+  // English
+  "report","today report","daily report","sales report",
+  "summary","today summary","today sales","today total",
+  "earnings","income today",
+  // Telugu (Tenglish)
+  "report chupandi","neti report","neti summary",
+  "neti ammakaalu","neti sales","neti total",
+  "ee roju","ee roju report","ee roju sales",
+  "mottam","mottam cheppu",
+  // Hindi (Hinglish)
+  "aaj ka report","aaj ki report","aaj ka summary",
+  "aaj kitna bika","aaj ki bikri","aaj ka total",
+  "din ka report","sales batao","kitna kamaya","aaj ka hisaab"
+];
+
+// ── SMART PARSER ───────────────────────────────────────────
+
+function smartParse(message: string): any {
   const msg = message.toLowerCase().trim();
 
-  // GREETING — no Gemini
-  const greetings = [
-    "hi","hello","hey","hii","helo","sup","yo",
-    "namaste","namaskaram","namasthe","ayya","anna",
-    "good morning","good evening","gm","ge"
-  ];
-  if (greetings.includes(msg)) return { action: "greeting" };
+  // 1. GREETING — exact match from list
+  if (greetingWords.some(w => msg === w || msg.startsWith(w + " ")))
+    return { action: "greeting" };
 
-  // BULK ADD — Check this BEFORE single add
+  // 2. INVENTORY — check before number-based parsing
+  if (inventoryWords.some(w => msg.includes(w)))
+    return { action: "inventory" };
+
+  // 3. REPORT — check before number-based parsing
+  if (reportWords.some(w => msg.includes(w)))
+    return { action: "report" };
+
+  // 4. BULK ADD — "add 10 soaps 5 chips 3 oil" (must come before single add)
   const bulkPairs = [...msg.matchAll(/(\d+)\s+([a-z]+)/g)];
   if (msg.startsWith("add") && bulkPairs.length >= 2) {
     return {
       action: "bulk_add",
-      items: bulkPairs.map(p => ({ 
-        quantity: parseInt(p[1]), 
-        item: p[2] 
+      items: bulkPairs.map(p => ({
+        quantity: parseInt(p[1]),
+        item: p[2]
       }))
     };
   }
 
-  // ADD single item — "add 10 soaps" or "10 soaps add"
-  const addMatch = msg.match(/^add\s+(\d+)\s+(.+)$|^(\d+)\s+(.+?)\s+add$/);
-  if (addMatch) {
-    return {
-      action: "add",
-      quantity: parseInt(addMatch[1] ?? addMatch[3]),
-      item: (addMatch[2] ?? addMatch[4]).trim(),
-    };
+  // 5. FIND NUMBER + ITEM in message (core of natural language parsing)
+  const numMatch = msg.match(/(\d+)\s*([a-z]+(?:\s[a-z]+)?)/);
+  if (numMatch) {
+    const qty = parseInt(numMatch[1]);
+    const item = numMatch[2].trim();
+    // Check if any sold verb exists in the message
+    const isSold = soldVerbs.some(v => msg.includes(v));
+    if (isSold) return { action: "sold", quantity: qty, item };
+    // Default to add — "10 soapulu" or "5 chips vachayi" both mean add
+    return { action: "add", quantity: qty, item };
   }
-
-  // BULK SOLD — detect pattern manually if not in ruleBasedParse request, but user request implies comprehensive rules
-  const bulkSold = msg.match(/^(?:sold|becha|ammadu|amme)\s+((?:\d+\s+\S+\s*)+)$/);
-  if (bulkSold) {
-    const pairs = [...bulkSold[1].matchAll(/(\d+)\s+(\S+)/g)];
-    if (pairs.length > 1) {
-      return {
-        action: "bulk_sold",
-        items: pairs.map((p) => ({ quantity: parseInt(p[1]), item: p[2] })),
-      };
-    }
-  }
-
-  // SOLD — "sold 5 chips", "becha 5 chips", "ammadu 5 chips"
-  const soldMatch = msg.match(
-    /^(?:sold?|becha|ammadu|amme|bech)\s+(\d+)\s+(.+)$|^(\d+)\s+(.+?)\s+(?:sold?|becha)$/
-  );
-  if (soldMatch) {
-    return {
-      action: "sold",
-      quantity: parseInt(soldMatch[1] ?? soldMatch[3]),
-      item: (soldMatch[2] ?? soldMatch[4]).trim(),
-    };
-  }
-
-  // INVENTORY
-  if (/inventory|stock\s*list|show\s*stock|show\s*inventory|meeru\s*stock|maal\s*dikao|sthithi|list/.test(msg))
-    return { action: "inventory" };
-
-  // REPORT
-  if (/report|today|aaj|neti|summary|sales/.test(msg))
-    return { action: "report" };
 
   return { action: "unknown" };
 }
 
 async function parseMessage(message: string): Promise<any> {
-  // Step 1: Try rule-based first — NO Gemini
-  const ruleResult = ruleBasedParse(message);
+  // Step 1: Try smart-parser first — NO Gemini
+  const ruleResult = smartParse(message);
   if (ruleResult.action !== "unknown") return ruleResult;
 
   // Step 2: Only call Gemini for ambiguous messages
@@ -341,63 +399,12 @@ async function parseMessageWithAI(messageText: string): Promise<ParsedAction | n
   }
 }
 
-// --- Core Logic: Rule-Based Parser & Validation ---
+// --- Core Logic: Parser Validation ---
 interface ParsedAction {
   action: "ADD" | "SELL" | "QUERY" | "REPORT";
   item: string;
   quantity: number;
   reply: string;
-}
-
-function parseMessageRuleBased(messageText: string): ParsedAction | null {
-  const text = messageText.toLowerCase().trim();
-
-  if (text === "show inventory" || text === "inventory") {
-    return { action: "QUERY", item: "", quantity: 0, reply: "Here is your current inventory:" };
-  }
-  if (text === "today report" || text === "report") {
-    return { action: "REPORT", item: "", quantity: 0, reply: "Here is today's report:" };
-  }
-
-  const addMatch = text.match(/^add\s+(\d+)\s+(.+)$/i);
-  if (addMatch) {
-    return { action: "ADD", quantity: parseInt(addMatch[1], 10), item: addMatch[2].trim(), reply: `Added ${addMatch[1]} ${addMatch[2].trim()}` };
-  }
-
-  const sellMatch = text.match(/^(?:sold|sell)\s+(\d+)\s+(.+)$/i);
-  if (sellMatch) {
-    return { action: "SELL", quantity: parseInt(sellMatch[1], 10), item: sellMatch[2].trim(), reply: `Sold ${sellMatch[1]} ${sellMatch[2].trim()}` };
-  }
-
-  return null;
-}
-
-function parseBulkAction(messageText: string): ParsedAction[] | null {
-  const text = messageText.toLowerCase().trim();
-  const bulkMatch = text.match(/^(sold|becha|add)\s+(.+)$/i);
-  if (!bulkMatch) return null;
-
-  const actionType = bulkMatch[1].toLowerCase() === "add" ? "ADD" : "SELL";
-  const content = bulkMatch[2];
-  
-  // Regex to find all "quantity item" pairs
-  const itemRegex = /(\d+)\s+([^0-9]+?)(?=\s+\d+|$)/g;
-  const matches = [...content.matchAll(itemRegex)];
-  
-  if (matches.length <= 1 && actionType === "SELL") {
-    // If only one item, let the normal rule-based or AI parser handle it
-    // unless it was specifically triggered by "becha"
-    if (bulkMatch[1].toLowerCase() !== "becha") return null;
-  }
-  
-  if (matches.length === 0) return null;
-
-  return matches.map(m => ({
-    action: actionType,
-    quantity: parseInt(m[1], 10),
-    item: m[2].trim(),
-    reply: actionType === "ADD" ? `Added ${m[1]} ${m[2].trim()}` : `Sold ${m[1]} ${m[2].trim()}`
-  }));
 }
 
 function isValidParsedAction(result: any): result is ParsedAction {
