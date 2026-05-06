@@ -18,7 +18,192 @@ const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
 // --- Global State (In-Memory) ---
-const pendingOnboarding: Record<string, { step: "awaiting_shop_name" | "awaiting_owner_name"; shopName?: string }> = {};
+const pendingOnboarding: Record<string, { step: "awaiting_shop_name" | "awaiting_owner_name"; shopName?: string; language?: Lang }> = {};
+
+const replyTemplates = {
+  english: {
+    askShopName: "Welcome to Kirana AI! 👋\nWhat is your shop name?",
+    shopRegistered: (shop: string) =>
+      `Great! ${shop} registered ✅\nWhat is your name?`,
+    welcomeUser: (name: string, shop: string) =>
+      `Welcome ${name}! 🎉\n${shop} is ready on Kirana AI.\n\nTry these:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
+    addSuccess: (qty: number, item: string, total: number) =>
+      `Added ${qty} ${item}! 📦 Total stock: ${total}`,
+    soldSuccess: (qty: number, item: string, remaining: number) =>
+      `Sold ${qty} ${item}! 🛒 Remaining: ${remaining}`,
+    lowStock: (item: string, remaining: number) =>
+      `⚠️ Low stock: ${item} only ${remaining} left — reorder soon!`,
+    outOfStock: (item: string) =>
+      `❌ ${item} is out of stock. Please restock first.`,
+    inventoryHeader: (name: string) =>
+      `${name}, here is your inventory:`,
+    reportHeader: (name: string) =>
+      `${name}, here is today's report:`,
+    greeting: (name: string) =>
+      `Hey ${name}! 👋 How can I help?\nTry: 'add 10 soaps' or 'show inventory'`,
+    notUnderstood:
+      "Didn't understand 🙏 Try: 'add 5 chips' or 'show inventory'",
+  },
+  telugu: {
+    askShopName:
+      "Kirana AI ki swaagatam! 👋\nMee shop peru cheppagalaru?",
+    shopRegistered: (shop: string) =>
+      `Baagundi! ${shop} register ayyindi ✅\nMee peru cheppandi?`,
+    welcomeUser: (name: string, shop: string) =>
+      `Swaagatam ${name} anna! 🎉\n${shop} Kirana AI lo ready ga undi.\n\nIvi try cheyyandi:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
+    addSuccess: (qty: number, item: string, total: number) =>
+      `${qty} ${item} add chesamu! 📦 Meeru unna stock: ${total}`,
+    soldSuccess: (qty: number, item: string, remaining: number) =>
+      `${qty} ${item} ammamu! 🛒 Migilina stock: ${remaining}`,
+    lowStock: (item: string, remaining: number) =>
+      `⚠️ Stock takkuva: ${item} kevalam ${remaining} undhi — tvaraga order ivvandi!`,
+    outOfStock: (item: string) =>
+      `❌ ${item} stock ledu. Mundu restock cheyyandi.`,
+    inventoryHeader: (name: string) =>
+      `${name} anna, mee inventory idi:`,
+    reportHeader: (name: string) =>
+      `${name} anna, neti report idi:`,
+    greeting: (name: string) =>
+      `Baagundi ${name} anna! 👋 Ela help cheyyali?\nTry: 'add 10 soaps' or 'show inventory'`,
+    notUnderstood:
+      "Artham kaaledu 🙏 Try: 'add 5 chips' or 'show inventory'",
+  },
+  hindi: {
+    askShopName:
+      "Kirana AI mein swagat! 👋\nApka shop ka naam kya hai?",
+    shopRegistered: (shop: string) =>
+      `Badhiya! ${shop} register ho gaya ✅\nApka naam batayein?`,
+    welcomeUser: (name: string, shop: string) =>
+      `Swagat hai ${name} bhai! 🎉\n${shop} Kirana AI pe ready hai.\n\nYe try karein:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
+    addSuccess: (qty: number, item: string, total: number) =>
+      `${qty} ${item} add ho gaya! 📦 Total stock: ${total}`,
+    soldSuccess: (qty: number, item: string, remaining: number) =>
+      `${qty} ${item} bik gaya! 🛒 Bacha hua: ${remaining}`,
+    lowStock: (item: string, remaining: number) =>
+      `⚠️ Stock kam: ${item} sirf ${remaining} bacha — jaldi order karo!`,
+    outOfStock: (item: string) =>
+      `❌ ${item} khatam ho gaya. Pehle restock karo.`,
+    inventoryHeader: (name: string) =>
+      `${name} bhai, aapki inventory:`,
+    reportHeader: (name: string) =>
+      `${name} bhai, aaj ki report:`,
+    greeting: (name: string) =>
+      `Kya haal hai ${name} bhai! 👋 Kya help chahiye?\nTry: 'add 10 soaps' ya 'show inventory'`,
+    notUnderstood:
+      "Samajh nahi aaya 🙏 Try: 'add 5 chips' ya 'show inventory'",
+  },
+};
+
+type Lang = "english" | "telugu" | "hindi";
+
+function getReply(lang: string) {
+  return replyTemplates[(lang as Lang)] ?? replyTemplates.english;
+}
+
+function detectLanguage(message: string): Lang {
+  const msg = message.toLowerCase();
+  if (
+    /namaskaram|vachayi|anna|ayya|bagundi|cheppu|meeru|ledhu|undi|ela|swaagatam|namasthe/.test(msg)
+  )
+    return "telugu";
+  if (
+    /namaste|bhai|kya|nahi|acha|theek|shukriya|bolo|accha|swagat|dhanyavaad/.test(msg)
+  )
+    return "hindi";
+  return "english";
+}
+
+function ruleBasedParse(message: string): any {
+  const msg = message.toLowerCase().trim();
+
+  // GREETING — no Gemini
+  const greetings = [
+    "hi","hello","hey","hii","helo","sup","yo",
+    "namaste","namaskaram","namasthe","ayya","anna",
+    "good morning","good evening","gm","ge"
+  ];
+  if (greetings.includes(msg)) return { action: "greeting" };
+
+  // ADD single item — "add 10 soaps" or "10 soaps add"
+  const addMatch = msg.match(/^add\s+(\d+)\s+(.+)$|^(\d+)\s+(.+?)\s+add$/);
+  if (addMatch) {
+    return {
+      action: "add",
+      quantity: parseInt(addMatch[1] ?? addMatch[3]),
+      item: (addMatch[2] ?? addMatch[4]).trim(),
+    };
+  }
+
+  // BULK ADD — "add 10 soaps 5 chips 3 oil"
+  const bulkAdd = msg.match(/^add\s+((?:\d+\s+\S+\s*)+)$/);
+  if (bulkAdd) {
+    const pairs = [...bulkAdd[1].matchAll(/(\d+)\s+(\S+)/g)];
+    if (pairs.length > 1) {
+      return {
+        action: "bulk_add",
+        items: pairs.map((p) => ({ quantity: parseInt(p[1]), item: p[2] })),
+      };
+    }
+  }
+
+  // BULK SOLD — detect pattern manually if not in ruleBasedParse request, but user request implies comprehensive rules
+  const bulkSold = msg.match(/^(?:sold|becha|ammadu|amme)\s+((?:\d+\s+\S+\s*)+)$/);
+  if (bulkSold) {
+    const pairs = [...bulkSold[1].matchAll(/(\d+)\s+(\S+)/g)];
+    if (pairs.length > 1) {
+      return {
+        action: "bulk_sold",
+        items: pairs.map((p) => ({ quantity: parseInt(p[1]), item: p[2] })),
+      };
+    }
+  }
+
+  // SOLD — "sold 5 chips", "becha 5 chips", "ammadu 5 chips"
+  const soldMatch = msg.match(
+    /^(?:sold?|becha|ammadu|amme|bech)\s+(\d+)\s+(.+)$|^(\d+)\s+(.+?)\s+(?:sold?|becha)$/
+  );
+  if (soldMatch) {
+    return {
+      action: "sold",
+      quantity: parseInt(soldMatch[1] ?? soldMatch[3]),
+      item: (soldMatch[2] ?? soldMatch[4]).trim(),
+    };
+  }
+
+  // INVENTORY
+  if (/inventory|stock\s*list|show\s*stock|show\s*inventory|meeru\s*stock|maal\s*dikao|sthithi|list/.test(msg))
+    return { action: "inventory" };
+
+  // REPORT
+  if (/report|today|aaj|neti|summary|sales/.test(msg))
+    return { action: "report" };
+
+  return { action: "unknown" };
+}
+
+async function parseMessage(message: string): Promise<any> {
+  // Step 1: Try rule-based first — NO Gemini
+  const ruleResult = ruleBasedParse(message);
+  if (ruleResult.action !== "unknown") return ruleResult;
+
+  // Step 2: Only call Gemini for ambiguous messages
+  try {
+    const geminiResult = await parseMessageWithAI(message);
+    if (geminiResult?.action) {
+      // Normalize AI action to lowercase for internal consistency
+      return {
+        ...geminiResult,
+        action: geminiResult.action.toLowerCase()
+      };
+    }
+  } catch (err: any) {
+    // Silently handle 429 / quota errors — do not crash
+    console.log("[FALLBACK] Gemini unavailable:", err?.status ?? err?.message);
+  }
+
+  // Step 3: Still unknown — return not_understood
+  return { action: "not_understood" };
+}
 
 console.log(`[DEBUG] WHATSAPP_TOKEN starts with: ${WHATSAPP_TOKEN ? WHATSAPP_TOKEN.substring(0, 5) : "MISSING"}`);
 console.log(`[DEBUG] PHONE_ID: ${PHONE_ID || "MISSING"}`);
@@ -363,28 +548,29 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   // 1. FIRST TIME ONBOARDING LOGIC
   const onboarding = pendingOnboarding[sender];
   if (onboarding) {
+    const lang = onboarding.language || "english";
+    const reply = getReply(lang);
+
     if (onboarding.step === "awaiting_shop_name") {
       const shopName = messageText.trim();
-      pendingOnboarding[sender] = { step: "awaiting_owner_name", shopName };
-      await sendWhatsAppMessage(sender, `Great! ${shopName} registered ✅\nAb apka naam batayein? (Your name please?)`);
+      pendingOnboarding[sender] = { ...onboarding, step: "awaiting_owner_name", shopName };
+      await sendWhatsAppMessage(sender, reply.shopRegistered(shopName));
       return res.sendStatus(200);
     } else if (onboarding.step === "awaiting_owner_name") {
       const ownerName = messageText.trim();
-      const shopName = onboarding.shopName;
+      const shopName = onboarding.shopName || "My Shop";
       
       // Save to Firestore
       await db.collection("shops").doc(sender).collection("profile").doc("info").set({
         shopName,
         ownerName,
+        language: lang,
         phone: sender,
         registeredAt: admin.firestore.FieldValue.serverTimestamp()
       });
       
       delete pendingOnboarding[sender];
-      
-      await sendWhatsAppMessage(sender, 
-        `Welcome ${ownerName} bhai! 🎉\n${shopName} is ready on Kirana AI.\n\nTry these commands:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`
-      );
+      await sendWhatsAppMessage(sender, reply.welcomeUser(ownerName, shopName));
       return res.sendStatus(200);
     }
   }
@@ -394,86 +580,110 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   const profileDoc = await profileRef.get();
 
   if (!profileDoc.exists) {
-    pendingOnboarding[sender] = { step: "awaiting_shop_name" };
-    await sendWhatsAppMessage(sender, "Namaste! 🙏 Welcome to Kirana AI!\nApka shop ka naam kya hai?\n(What is your shop name?)");
+    // Detect language from the very first message
+    const detectedLang = detectLanguage(messageText);
+    pendingOnboarding[sender] = { step: "awaiting_shop_name", language: detectedLang };
+    await sendWhatsAppMessage(sender, getReply(detectedLang).askShopName);
     return res.sendStatus(200);
   }
 
   const profileData = profileDoc.data();
-  const ownerFirstName = profileData?.ownerName?.split(" ")[0] || "Owner";
+  const lang = (profileData?.language as Lang) || "english";
+  const ownerName = profileData?.ownerName || "Owner";
+  const ownerFirstName = ownerName.split(" ")[0];
+  const reply = getReply(lang);
 
-  // 2. BULK PROCESSING
-  const bulkActions = parseBulkAction(messageText);
-  if (bulkActions && bulkActions.length > 1) {
-    let summaryLines = [`📊 ${bulkActions[0].action === "ADD" ? "Bulk stock update" : "End of day update"} done, ${ownerFirstName} bhai!`];
-    let lowStockAlerts: string[] = [];
-
-    for (const action of bulkActions) {
-      await processAddSell(sender, action);
-      
-      // Fetch new quantity for the summary and low stock check
-      const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(action.item.toLowerCase().trim()).get();
-      const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
-      
-      summaryLines.push(`• ${action.action === "ADD" ? "Added" : "Sold"} ${action.item}: ${action.quantity} (remaining: ${currentQty})`);
-      
-      if (currentQty <= 5) {
-        lowStockAlerts.push(` • ${action.item} only ${currentQty} left — time to reorder!`);
-      }
-    }
-
-    let finalBulkReply = summaryLines.join("\n");
-    if (lowStockAlerts.length > 0) {
-      finalBulkReply += "\n\n⚠️ Low stock alert:\n" + lowStockAlerts.join("\n");
-    }
-
-    await sendWhatsAppMessage(sender, finalBulkReply);
-    return res.sendStatus(200);
-  }
-
-  // 3. NORMAL PROCESSING (Rules or AI Fallback)
-  let parsedAction = parseMessageRuleBased(messageText);
-  let handledBy = "RULES";
-
-  if (!parsedAction) {
-    parsedAction = await parseMessageWithAI(messageText);
-    handledBy = "AI";
-  }
-
-  console.log(`[PARSE] Handled by: ${handledBy}`);
-
-  if (!isValidParsedAction(parsedAction)) {
-    console.error(`[PARSE ERROR] Invalid action received from ${handledBy}:`, parsedAction);
-    await handleInvalidParse(sender);
-    return res.sendStatus(200);
-  }
+  // 2. PARSE MESSAGE (Rule-Based First, Gemini Fallback)
+  const actionResult = await parseMessage(messageText);
+  console.log(`[PARSE] Action: ${actionResult.action}`);
 
   let finalReply = "";
 
   try {
-    // 3. Process the validated action
-    if (parsedAction.action === "ADD" || parsedAction.action === "SELL") {
-      finalReply = await processAddSell(sender, parsedAction);
-      
-      // Add personalization to the string returned by processAddSell
-      // Pattern: "Sold 5 chips\n📦 Current Total: X" -> "Sold 5 chips, Ramesh bhai!\n📦 Current Total: X"
-      finalReply = finalReply.replace("\n📦 Current Total:", `, ${ownerFirstName} bhai!\n📦 Current Total:`);
+    if (actionResult.action === "greeting") {
+      finalReply = reply.greeting(ownerFirstName);
+    } 
+    else if (actionResult.action === "add" || actionResult.action === "sold") {
+      const isAdd = actionResult.action === "add";
+      // Construct a temporary ParsedAction for processAddSell compatibility
+      const tempAction: ParsedAction = {
+        action: isAdd ? "ADD" : "SELL",
+        item: actionResult.item,
+        quantity: actionResult.quantity,
+        reply: "" // reply is generated by getReply now
+      };
 
-      // Check Low Stock
-      const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(parsedAction.item.toLowerCase().trim()).get();
+      await processAddSell(sender, tempAction);
+      
+      // Fetch new quantity for the accurate reply
+      const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(actionResult.item.toLowerCase().trim()).get();
       const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+      
+      finalReply = isAdd 
+        ? reply.addSuccess(actionResult.quantity, actionResult.item, currentQty)
+        : reply.soldSuccess(actionResult.quantity, actionResult.item, currentQty);
+
       if (currentQty <= 5) {
-        finalReply += `\n\n⚠️ Low stock alert:\n • ${parsedAction.item} only ${currentQty} left — time to reorder!`;
+        finalReply += "\n\n" + reply.lowStock(actionResult.item, currentQty);
+      }
+    } 
+    else if (actionResult.action === "bulk_add" || actionResult.action === "bulk_sold") {
+      const isAdd = actionResult.action === "bulk_add";
+      let summaryLines = [isAdd ? `📊 Bulk stock update done, ${ownerFirstName} bhai!` : `📊 End of day update done, ${ownerFirstName} bhai!`];
+      let lowStockAlerts: string[] = [];
+
+      for (const item of actionResult.items) {
+        const tempAction: ParsedAction = {
+          action: isAdd ? "ADD" : "SELL",
+          item: item.item,
+          quantity: item.quantity,
+          reply: ""
+        };
+        await processAddSell(sender, tempAction);
+        
+        const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(item.item.toLowerCase().trim()).get();
+        const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+        
+        summaryLines.push(`• ${isAdd ? "Added" : "Sold"} ${item.item}: ${item.quantity} (Total: ${currentQty})`);
+        
+        if (currentQty <= 5) {
+          lowStockAlerts.push(reply.lowStock(item.item, currentQty));
+        }
       }
 
-    } else if (parsedAction.action === "QUERY") {
-      finalReply = await buildQueryReply(sender, parsedAction);
-      // Prepend personalization
-      finalReply = `${ownerFirstName} bhai, ` + finalReply.charAt(0).toLowerCase() + finalReply.slice(1);
-    } else if (parsedAction.action === "REPORT") {
-      finalReply = await buildReportReply(sender, parsedAction);
-      // Personalize
-      finalReply = `${ownerFirstName} bhai, here is today's report:\n` + finalReply.split("\n").slice(1).join("\n");
+      finalReply = summaryLines.join("\n");
+      if (lowStockAlerts.length > 0) {
+        finalReply += "\n\n⚠️ Low stock alert:\n" + lowStockAlerts.join("\n");
+      }
+    } 
+    else if (actionResult.action === "inventory") {
+      const inventoryRef = db.collection("shops").doc(sender).collection("inventory");
+      const snapshot = await inventoryRef.get();
+      if (snapshot.empty) {
+        finalReply = reply.inventoryHeader(ownerFirstName) + "\nEmpty / ఖాళీగా ఉంది / खाली है";
+      } else {
+        const items = snapshot.docs.map(doc => `- ${doc.data().name}: ${doc.data().quantity}`);
+        finalReply = reply.inventoryHeader(ownerFirstName) + "\n" + items.join("\n");
+      }
+    } 
+    else if (actionResult.action === "report") {
+      const logsRef = db.collection("shops").doc(sender).collection("logs");
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      
+      const logSnapshot = await logsRef.where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay)).get();
+      const summary = logSnapshot.docs.reduce((acc: any, d) => {
+        const data = d.data();
+        const key = `${data.action} ${data.item}`;
+        acc[key] = (acc[key] || 0) + data.quantity;
+        return acc;
+      }, {});
+
+      const summaryText = Object.entries(summary).map(([key, val]) => `• ${key}: ${val}`).join("\n");
+      finalReply = reply.reportHeader(ownerFirstName) + "\n" + (summaryText || "No activity today.");
+    } 
+    else {
+      finalReply = reply.notUnderstood;
     }
 
     // 4. Reply via WhatsApp
@@ -483,7 +693,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     console.error("[PROCESS ERROR]", error);
   }
 
-  res.status(200).json({ success: true, handledBy, result: parsedAction });
+  res.status(200).json({ success: true, action: actionResult.action });
 });
 
 // Health check
