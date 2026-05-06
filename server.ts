@@ -45,6 +45,8 @@ const replyTemplates = {
       `Hey ${name}! 👋 How can I help?\nTry: 'add 10 soaps' or 'show inventory'`,
     notUnderstood:
       "Didn't understand 🙏 Try: 'add 5 chips' or 'show inventory'",
+    notUnderstoodHelp: (item1: string, item2: string) => 
+      `Didn't get that 🙏\nTry something like:\n• add 10 ${item1}\n• sold 5 ${item2}\n• show inventory`,
   },
   telugu: {
     askShopName:
@@ -71,6 +73,8 @@ const replyTemplates = {
       `Baagundi ${name} anna! 👋 Ela help cheyyali?\nTry: 'add 10 soaps' or 'show inventory'`,
     notUnderstood:
       "Artham kaaledu 🙏 Try: 'add 5 chips' or 'show inventory'",
+    notUnderstoodHelp: (item1: string, item2: string) => 
+      `Artham kaaledu 🙏\nIla try cheyyandi:\n• add 10 ${item1}\n• 5 ${item2} ammamu\n• nilava chupandi`,
   },
   hindi: {
     askShopName:
@@ -97,6 +101,8 @@ const replyTemplates = {
       `Kya haal hai ${name} bhai! 👋 Kya help chahiye?\nTry: 'add 10 soaps' ya 'show inventory'`,
     notUnderstood:
       "Samajh nahi aaya 🙏 Try: 'add 5 chips' ya 'show inventory'",
+    notUnderstoodHelp: (item1: string, item2: string) => 
+      `Samajh nahi aaya 🙏\nAisa try karein:\n• add 10 ${item1}\n• 5 ${item2} becha\n• stock dikao`,
   },
 };
 
@@ -206,11 +212,16 @@ const reportWords = [
 // ── BUG 1 FIX: Strip verbs from item name ──────────────────
 
 function cleanItemName(raw: string): string {
-  const allVerbs = [...addVerbs, ...soldVerbs];
-  let cleaned = raw.trim();
+  const allVerbs = [...addVerbs, ...soldVerbs,
+    // extra noise words that attach to item names
+    "ninna","neti","ee roju","aaj","kal","yesterday",
+    "the","a","an","some","few"
+  ];
+  let cleaned = raw.trim().toLowerCase();
   for (const verb of allVerbs) {
-    // Remove verb if it appears at start or end of item name
-    const re = new RegExp(`^${verb}\\s+|\\s+${verb}$|^${verb}$`, "i");
+    const re = new RegExp(
+      `^${verb}\\s+|\\s+${verb}$|^${verb}$`, "gi"
+    );
     cleaned = cleaned.replace(re, "").trim();
   }
   return cleaned;
@@ -225,8 +236,8 @@ function smartParse(message: string): any {
   if (greetingWords.some(w => msg === w || msg.startsWith(w + " ")))
     return { action: "greeting" };
 
-  // 2. INVENTORY — BUG 2 FIX: handle standalone stock/list
-  if (msg === "stock" || msg === "list" || inventoryWords.some(w => msg.includes(w)))
+  // 2. INVENTORY — BUG 2 FIX: handle standalone stock/list/etc
+  if (msg === "stock" || msg === "list" || msg === "nilava" || msg === "inventory" || msg === "maal" || inventoryWords.some(w => msg.includes(w)))
     return { action: "inventory" };
 
   // 3. REPORT — check before number-based parsing
@@ -618,7 +629,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   const profileData = profileDoc.data();
   let lang = (profileData?.language as Lang) || "english";
 
-  // BUG 1 FIX: Language update for existing users
+  // PART 2: Language switching for existing users
   const newDetectedLang = detectLanguage(messageText);
   if ((newDetectedLang === "telugu" || newDetectedLang === "hindi") && newDetectedLang !== lang) {
     lang = newDetectedLang;
@@ -707,7 +718,16 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       if (snapshot.empty) {
         finalReply = reply.inventoryHeader(ownerFirstName) + "\nEmpty / ఖాళీగా ఉంది / खाली है";
       } else {
-        const items = snapshot.docs.map(doc => `- ${doc.data().name}: ${doc.data().quantity}`);
+        // Sort items alphabetically
+        const items = snapshot.docs
+          .map(doc => {
+            const data = doc.data();
+            const capitalizedName = data.name.charAt(0).toUpperCase() + data.name.slice(1);
+            return { name: capitalizedName, quantity: data.quantity };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map(item => `- ${item.name}: ${item.quantity}`);
+
         finalReply = reply.inventoryHeader(ownerFirstName) + "\n" + items.join("\n");
       }
     } 
@@ -719,7 +739,9 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       const logSnapshot = await logsRef.where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay)).get();
       const summary = logSnapshot.docs.reduce((acc: any, d) => {
         const data = d.data();
-        const key = `${data.action} ${data.item}`;
+        const capitalizedItem = data.item.charAt(0).toUpperCase() + data.item.slice(1);
+        const label = data.action === "ADD" ? "📦 Stocked" : "🛒 Sold";
+        const key = `${label} ${capitalizedItem}`;
         acc[key] = (acc[key] || 0) + data.quantity;
         return acc;
       }, {});
@@ -728,7 +750,14 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       finalReply = reply.reportHeader(ownerFirstName) + "\n" + (summaryText || "No activity today.");
     } 
     else {
-      finalReply = reply.notUnderstood;
+      // Helpful Not Understood Reply
+      const inventoryRef = db.collection("shops").doc(sender).collection("inventory");
+      const snapshot = await inventoryRef.limit(2).get();
+      const exampleItems = snapshot.docs.map(d => d.data().name);
+      const item1 = exampleItems[0] || "santoor";
+      const item2 = exampleItems[1] || "lays masala";
+      
+      finalReply = (reply as any).notUnderstoodHelp(item1, item2);
     }
 
     // 4. Reply via WhatsApp
