@@ -9,7 +9,8 @@ import { smartParse, detectLanguage, cleanItemName, capitalize, addVerbs, soldVe
 import { replyTemplates, getReply, Lang } from "./src/templates";
 import { 
   getUser, saveUser, updateStock, getInventory, 
-  logTransaction, getTodayTransactions 
+  logTransaction, getTodayTransactions,
+  getOnboardingState, setOnboardingState, clearOnboardingState
 } from "./src/database";
 
 dotenv.config();
@@ -19,8 +20,6 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
-
-const pendingOnboarding: Record<string, { step: "awaiting_shop_name" | "awaiting_owner_name"; shopName?: string; language?: Lang }> = {};
 
 const genAI = new GoogleGenerativeAI(GEMINI_KEY || "");
 const app = express();
@@ -75,19 +74,19 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 
   const profile = await getUser(sender);
   if (!profile) {
-    const onboarding = pendingOnboarding[sender];
+    const onboarding = await getOnboardingState(sender);
     if (!onboarding) {
       const lang = detectLanguage(messageText);
-      pendingOnboarding[sender] = { step: "awaiting_shop_name", language: lang };
+      await setOnboardingState(sender, { step: "awaiting_shop_name", language: lang });
       await sendWhatsAppMessage(sender, getReply(lang).askShopName);
     } else if (onboarding.step === "awaiting_shop_name") {
-      pendingOnboarding[sender].shopName = messageText.trim();
-      pendingOnboarding[sender].step = "awaiting_owner_name";
-      await sendWhatsAppMessage(sender, getReply(onboarding.language!).shopRegistered(messageText));
+      const shopName = messageText.trim();
+      await setOnboardingState(sender, { ...onboarding, step: "awaiting_owner_name", shopName });
+      await sendWhatsAppMessage(sender, getReply(onboarding.language!).shopRegistered(shopName));
     } else {
       const { shopName, language } = onboarding;
       await saveUser(sender, { shopName, ownerName: messageText, language });
-      delete pendingOnboarding[sender];
+      await clearOnboardingState(sender);
       await sendWhatsAppMessage(sender, getReply(language!).welcomeUser(messageText, shopName!));
     }
     return res.sendStatus(200);
@@ -124,32 +123,40 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       results.push(reply.greeting(ownerName));
       isAnyAction = true;
     } else if (["add", "sold"].includes(effectiveAction) && (parsed.item || line.match(/\d/))) {
-      let item = parsed.item, qty = parsed.quantity;
+      let item = parsed.item, qty = parsed.quantity, unit = parsed.unit || "";
       if (!item) {
-        const m = line.match(/^(\d+)\s+([a-z].+)$/) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
-        if (m) { qty = parseInt(m[1].match(/\d+/) ? m[1] : m[2]); item = cleanItemName(m[1].match(/\d+/) ? m[2] : m[1]); }
+        const m = line.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i) || line.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
+        if (m) { 
+          qty = parseInt(m[1].match(/\d+/) ? m[1] : (m[3] ? m[3] : m[2]));
+          unit = m[1].match(/\d+/) ? (m[2] || "") : "";
+          item = cleanItemName(m[1].match(/\d+/) ? m[3] : m[1]); 
+        }
       }
       if (item && qty) {
         const isAdd = effectiveAction === "add";
-        const total = await updateStock(sender, item, qty, isAdd ? "ADD" : "SELL");
-        await logTransaction(sender, isAdd ? "ADD" : "SELL", item, qty);
-        results.push(`✅ ${qty} ${capitalize(item)} ${isAdd ? (lang === "telugu" ? "add chesamu" : "added") : (lang === "telugu" ? "ammamu" : "sold")} (${isAdd ? "total" : "left"}: ${total})`);
-        if (!isAdd && total <= 5) results.push(reply.lowStock(item, total));
+        const { newQty, finalUnit, finalItem } = await updateStock(sender, item, qty, isAdd ? "ADD" : "SELL", unit);
+        await logTransaction(sender, isAdd ? "ADD" : "SELL", finalItem, qty, finalUnit);
+        
+        const successReply = isAdd ? reply.addSuccess(qty, capitalize(finalItem), newQty, finalUnit) : reply.soldSuccess(qty, capitalize(finalItem), newQty, finalUnit);
+        results.push(`✅ ${successReply}`);
+        
+        if (!isAdd && newQty <= 5) results.push(reply.lowStock(finalItem, newQty, finalUnit));
         isAnyAction = true;
       }
     } else if (effectiveAction === "inventory") {
       const inv = await getInventory(sender);
-      const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity}`).sort().join("\n");
+      const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity} ${i.unit || ""}`.trim()).sort().join("\n");
       results.push(reply.inventoryHeader(ownerName) + "\n" + (list || "Empty"));
       isAnyAction = true;
     } else if (effectiveAction === "report") {
       const logs = await getTodayTransactions(sender);
       const summary = logs.reduce((acc: any, l: any) => {
         const k = `${l.action === "ADD" ? "Stocked" : "Sold"} ${capitalize(l.item)}`;
-        acc[k] = (acc[k] || 0) + l.quantity;
+        acc[k] = (acc[k] || { qty: 0, unit: l.unit || "" });
+        acc[k].qty += l.quantity;
         return acc;
       }, {});
-      const text = Object.entries(summary).map(([k, v]) => `• ${k}: ${v}`).join("\n");
+      const text = Object.entries(summary).map(([k, v]: [string, any]) => `• ${k}: ${v.qty} ${v.unit}`.trim()).join("\n");
       results.push(reply.reportHeader(ownerName) + "\n" + (text || "No activity"));
       isAnyAction = true;
     } else if (parsed.action !== "skip") {
@@ -164,3 +171,4 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
+

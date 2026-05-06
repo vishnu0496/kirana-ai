@@ -5,12 +5,12 @@ const replyTemplates = {
       `Great! ${shop} registered ✅\nWhat is your name?`,
     welcomeUser: (name: string, shop: string) =>
       `Welcome ${name}! 🎉\n${shop} is ready on Kirana AI.\n\nTry these:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
-    addSuccess: (qty: number, item: string, total: number) =>
-      `Added ${qty} ${item}! 📦 Total stock: ${total}`,
-    soldSuccess: (qty: number, item: string, remaining: number) =>
-      `Sold ${qty} ${item}! 🛒 Remaining: ${remaining}`,
-    lowStock: (item: string, remaining: number) =>
-      `⚠️ Low stock: ${item} only ${remaining} left — reorder soon!`,
+    addSuccess: (qty: number, item: string, total: number, unit: string = "") =>
+      `Added ${qty} ${unit} ${item}! 📦 Total stock: ${total} ${unit}`.replace(/\s+/g, " "),
+    soldSuccess: (qty: number, item: string, remaining: number, unit: string = "") =>
+      `Sold ${qty} ${unit} ${item}! 🛒 Remaining: ${remaining} ${unit}`.replace(/\s+/g, " "),
+    lowStock: (item: string, remaining: number, unit: string = "") =>
+      `⚠️ Low stock: ${item} only ${remaining} ${unit} left — reorder soon!`.replace(/\s+/g, " "),
     outOfStock: (item: string) =>
       `❌ ${item} is out of stock. Please restock first.`,
     bulkAddSuccess: (lines: string) => 
@@ -34,12 +34,12 @@ const replyTemplates = {
       `Baagundi! ${shop} register ayyindi ✅\nMee peru cheppandi?`,
     welcomeUser: (name: string, shop: string) =>
       `Swaagatam ${name} anna! 🎉\n${shop} Kirana AI lo ready ga undi.\n\nIvi try cheyyandi:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
-    addSuccess: (qty: number, item: string, total: number) =>
-      `${qty} ${item} add chesamu! 📦 Meeru unna stock: ${total}`,
-    soldSuccess: (qty: number, item: string, remaining: number) =>
-      `${qty} ${item} ammamu! 🛒 Migilina stock: ${remaining}`,
-    lowStock: (item: string, remaining: number) =>
-      `⚠️ Stock takkuva: ${item} kevalam ${remaining} undhi — tvaraga order ivvandi!`,
+    addSuccess: (qty: number, item: string, total: number, unit: string = "") =>
+      `${qty} ${unit} ${item} add chesamu! 📦 Meeru unna stock: ${total} ${unit}`.replace(/\s+/g, " "),
+    soldSuccess: (qty: number, item: string, remaining: number, unit: string = "") =>
+      `${qty} ${unit} ${item} ammamu! 🛒 Migilina stock: ${remaining} ${unit}`.replace(/\s+/g, " "),
+    lowStock: (item: string, remaining: number, unit: string = "") =>
+      `⚠️ Stock takkuva: ${item} kevalam ${remaining} ${unit} undhi — tvaraga order ivvandi!`.replace(/\s+/g, " "),
     outOfStock: (item: string) =>
       `❌ ${item} stock ledu. Mundu restock cheyyandi.`,
     bulkAddSuccess: (lines: string) => 
@@ -63,12 +63,12 @@ const replyTemplates = {
       `Badhiya! ${shop} register ho gaya ✅\nApka naam batayein?`,
     welcomeUser: (name: string, shop: string) =>
       `Swagat hai ${name} bhai! 🎉\n${shop} Kirana AI pe ready hai.\n\nYe try karein:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`,
-    addSuccess: (qty: number, item: string, total: number) =>
-      `${qty} ${item} add ho gaya! 📦 Total stock: ${total}`,
-    soldSuccess: (qty: number, item: string, remaining: number) =>
-      `${qty} ${item} bik gaya! 🛒 Bacha hua: ${remaining}`,
-    lowStock: (item: string, remaining: number) =>
-      `⚠️ Stock kam: ${item} sirf ${remaining} bacha — jaldi order karo!`,
+    addSuccess: (qty: number, item: string, total: number, unit: string = "") =>
+      `${qty} ${unit} ${item} add ho gaya! 📦 Total stock: ${total} ${unit}`.replace(/\s+/g, " "),
+    soldSuccess: (qty: number, item: string, remaining: number, unit: string = "") =>
+      `${qty} ${unit} ${item} bik gaya! 🛒 Bacha hua: ${remaining} ${unit}`.replace(/\s+/g, " "),
+    lowStock: (item: string, remaining: number, unit: string = "") =>
+      `⚠️ Stock kam: ${item} sirf ${remaining} ${unit} bacha — jaldi order karo!`.replace(/\s+/g, " "),
     outOfStock: (item: string) =>
       `❌ ${item} khatam ho gaya. Pehle restock karo.`,
     bulkAddSuccess: (lines: string) => 
@@ -86,6 +86,7 @@ const replyTemplates = {
     bulkDone: "Sab update ho gaya! 📦",
   },
 };
+
 
 type Lang = "english" | "telugu" | "hindi";
 

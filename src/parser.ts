@@ -115,6 +115,37 @@ function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+export function findFuzzyMatch(
+  newItem: string, 
+  existingItems: string[]
+): string | null {
+  const n = newItem.toLowerCase().trim();
+  
+  // Exact match
+  const exact = existingItems.find(
+    e => e.toLowerCase() === n
+  );
+  if (exact) return exact;
+
+  // One contains the other
+  const contains = existingItems.find(e => {
+    const e2 = e.toLowerCase();
+    return e2.includes(n) || n.includes(e2);
+  });
+  if (contains) return contains;
+
+  // First word matches (santoor == santoor soap)
+  const firstWord = n.split(" ")[0];
+  if (firstWord.length >= 4) {
+    const firstMatch = existingItems.find(e =>
+      e.toLowerCase().startsWith(firstWord)
+    );
+    if (firstMatch) return firstMatch;
+  }
+
+  return null;
+}
+
 function smartParse(message: string): any {
   const msg = message.toLowerCase().trim();
 
@@ -146,14 +177,16 @@ function smartParse(message: string): any {
     };
   }
 
-  // 6. FIND NUMBER + ITEM (Number-First)
-  const numMatch = msg.match(/^(\d+)\s+([a-z].+)$/);
+  // 6. FIND NUMBER + UNIT + ITEM (Number-First)
+  // Updated regex: optional unit capture
+  const numMatch = msg.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i);
   if (numMatch) {
     const qty = parseInt(numMatch[1]);
-    const item = cleanItemName(numMatch[2]);
+    const unit = numMatch[2] || "";
+    const item = cleanItemName(numMatch[3]);
     const isSold = soldVerbs.some(v => msg.includes(v));
-    if (isSold) return { action: "sold", quantity: qty, item };
-    return { action: "add", quantity: qty, item };
+    if (isSold) return { action: "sold", quantity: qty, unit, item };
+    return { action: "add", quantity: qty, unit, item };
   }
 
   // 7. SUPPORT NUMBER-LAST FORMAT
@@ -162,8 +195,8 @@ function smartParse(message: string): any {
     const item = cleanItemName(numLastMatch[1].trim());
     const qty = parseInt(numLastMatch[2]);
     const isSold = soldVerbs.some(v => msg.includes(v));
-    if (isSold) return { action: "sold", quantity: qty, item };
-    return { action: "add", quantity: qty, item };
+    if (isSold) return { action: "sold", quantity: qty, unit: "", item };
+    return { action: "add", quantity: qty, unit: "", item };
   }
 
   return { action: "unknown" };
@@ -180,3 +213,4 @@ export {
   inventoryWords,
   reportWords
 };
+

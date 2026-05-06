@@ -3,6 +3,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+import { findFuzzyMatch } from "./parser";
 
 dotenv.config();
 
@@ -49,25 +50,58 @@ async function saveUser(phone: string, data: any) {
   }, { merge: true });
 }
 
-async function updateStock(phone: string, item: string, quantity: number, action: "ADD" | "SELL") {
-  const itemKey = item.toLowerCase().trim();
+async function getOnboardingState(phone: string): Promise<{step: string, shopName?: string, language?: any} | null> {
+  const doc = await db.collection("onboarding").doc(phone).get();
+  return doc.exists ? doc.data() as any : null;
+}
+
+async function setOnboardingState(phone: string, state: {step: string, shopName?: string, language?: any}): Promise<void> {
+  await db.collection("onboarding").doc(phone).set(state);
+}
+
+async function clearOnboardingState(phone: string): Promise<void> {
+  await db.collection("onboarding").doc(phone).delete();
+}
+
+async function updateStock(phone: string, item: string, quantity: number, action: "ADD" | "SELL", unit: string = "") {
+  const inventorySnapshot = await db.collection("shops").doc(phone).collection("inventory").get();
+  const existingItems = inventorySnapshot.docs.map(d => (d.data() as any).name);
+  
+  const fuzzyMatch = findFuzzyMatch(item, existingItems);
+  let finalItem = item;
+  if (fuzzyMatch && fuzzyMatch.toLowerCase() !== item.toLowerCase()) {
+    console.log(`[FUZZY] Merged "${item}" → "${fuzzyMatch}"`);
+    finalItem = fuzzyMatch;
+  }
+
+  const itemKey = finalItem.toLowerCase().trim();
   const itemDocRef = db.collection("shops").doc(phone).collection("inventory").doc(itemKey);
   
   let newQty = 0;
+  let finalUnit = unit;
+
   await db.runTransaction(async (transaction) => {
     const itemDoc = await transaction.get(itemDocRef);
-    const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+    const data = itemDoc.exists ? (itemDoc.data() as any) : null;
+    const currentQty = data ? data.quantity : 0;
+    
+    // If no unit provided, try to use existing unit
+    if (!finalUnit && data && data.unit) {
+      finalUnit = data.unit;
+    }
+
     newQty = action === "ADD" 
       ? currentQty + quantity 
       : Math.max(0, currentQty - quantity);
     
     transaction.set(itemDocRef, {
-      name: item,
+      name: finalItem,
       quantity: newQty,
+      unit: finalUnit,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
   });
-  return newQty;
+  return { newQty, finalUnit, finalItem };
 }
 
 async function getInventory(phone: string) {
@@ -75,12 +109,13 @@ async function getInventory(phone: string) {
   return snapshot.docs.map(doc => doc.data());
 }
 
-async function logTransaction(phone: string, action: string, item: string, quantity: number) {
+async function logTransaction(phone: string, action: string, item: string, quantity: number, unit: string = "") {
   const logsRef = db.collection("shops").doc(phone).collection("logs");
   await logsRef.add({
     action,
     item,
     quantity,
+    unit,
     timestamp: admin.firestore.FieldValue.serverTimestamp()
   });
 }
@@ -98,8 +133,12 @@ export {
   db, 
   getUser, 
   saveUser, 
+  getOnboardingState,
+  setOnboardingState,
+  clearOnboardingState,
   updateStock, 
   getInventory, 
   logTransaction, 
   getTodayTransactions 
 };
+
