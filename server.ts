@@ -665,48 +665,91 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   const lines = messageText.split("\n").filter(l => l.trim() !== "");
   let combinedReplyParts: string[] = [];
   let isAnyActionTaken = false;
+  let contextAction: "add" | "sold" | null = null;
 
   try {
     for (const line of lines) {
-      const actionResult = await parseMessage(line);
-      console.log(`[PARSE LINE] ${line} -> ${actionResult.action}`);
+      const parsed = await parseMessage(line);
+      console.log("[MULTILINE PARSE]", line, "→", JSON.stringify(parsed));
 
-      if (actionResult.action === "skip") continue;
-      isAnyActionTaken = true;
+      // Header line sets context for following lines
+      if (parsed.action === "skip") {
+        const lowerLine = line.toLowerCase().trim();
+        if (/^sold[:\s]?$/.test(lowerLine)) contextAction = "sold";
+        else if (/^add[:\s]?$/.test(lowerLine)) contextAction = "add";
+        continue;
+      }
 
-      if (actionResult.action === "greeting") {
+      // Check for explicit verb in the line itself
+      const lowerLine = line.toLowerCase();
+      const hasExplicitSold = soldVerbs.some(v => lowerLine.includes(v));
+      const hasExplicitAdd = addVerbs.some(v => lowerLine.includes(v));
+      
+      // Determine effective action
+      let effectiveAction = parsed.action;
+      if (hasExplicitSold) {
+        effectiveAction = "sold";
+      } else if (hasExplicitAdd) {
+        effectiveAction = "add";
+      } else if (contextAction && (parsed.action === "add" || parsed.action === "sold" || parsed.action === "unknown" || parsed.action === "not_understood")) {
+        // If no explicit verb, use context if available
+        effectiveAction = contextAction;
+      }
+
+      if (effectiveAction === "greeting") {
+        isAnyActionTaken = true;
         combinedReplyParts.push(reply.greeting(ownerFirstName));
       } 
-      else if (actionResult.action === "add" || actionResult.action === "sold") {
-        const isAdd = actionResult.action === "add";
-        const tempAction: ParsedAction = {
-          action: isAdd ? "ADD" : "SELL",
-          item: actionResult.item,
-          quantity: actionResult.quantity,
-          reply: ""
-        };
-        await processAddSell(sender, tempAction);
+      else if ((effectiveAction === "add" || effectiveAction === "sold" || effectiveAction === "ADD" || effectiveAction === "SELL") && (parsed.item || (parsed.action === "unknown" && line.match(/\d/)))) {
+        isAnyActionTaken = true;
         
-        const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(actionResult.item.toLowerCase().trim()).get();
-        const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+        // Handle cases where smartParse returned unknown but we have context + number
+        let finalItem = parsed.item;
+        let finalQty = parsed.quantity;
         
-        const verb = isAdd 
-          ? (lang === "telugu" ? "add chesamu" : lang === "hindi" ? "add kiya" : "added")
-          : (lang === "telugu" ? "ammamu" : lang === "hindi" ? "becha" : "sold");
-        
-        const label = isAdd ? (lang === "telugu" ? "total" : "total") : (lang === "telugu" ? "migilina" : "remaining");
+        if (!finalItem) {
+          const msg = line.toLowerCase().trim();
+          const numMatch = msg.match(/^(\d+)\s+([a-z].+)$/) || msg.match(/^([a-z][\w\s]+?)\s+(\d+)$/);
+          if (numMatch) {
+            finalQty = parseInt(numMatch[1].match(/\d+/) ? numMatch[1] : numMatch[2]);
+            const itemRaw = numMatch[1].match(/\d+/) ? numMatch[2] : numMatch[1];
+            finalItem = cleanItemName(itemRaw);
+          }
+        }
 
-        combinedReplyParts.push(`✅ ${actionResult.quantity} ${capitalize(actionResult.item)} ${verb} (${label}: ${currentQty})`);
+        if (finalItem && finalQty) {
+          const isAdd = effectiveAction.toLowerCase() === "add";
+          const tempAction: ParsedAction = {
+            action: isAdd ? "ADD" : "SELL",
+            item: finalItem,
+            quantity: finalQty,
+            reply: ""
+          };
+          await processAddSell(sender, tempAction);
+          
+          const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(finalItem.toLowerCase().trim()).get();
+          const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+          
+          const verb = isAdd 
+            ? (lang === "telugu" ? "add chesamu" : lang === "hindi" ? "add kiya" : "added")
+            : (lang === "telugu" ? "ammamu" : lang === "hindi" ? "becha" : "sold");
+          const label = isAdd ? "total" : (lang === "telugu" ? "migilina" : "remaining");
 
-        if (!isAdd && currentQty <= 5) {
-          combinedReplyParts.push(reply.lowStock(actionResult.item, currentQty));
+          combinedReplyParts.push(`✅ ${finalQty} ${capitalize(finalItem)} ${verb} (${label}: ${currentQty})`);
+
+          if (!isAdd && currentQty <= 5) {
+            combinedReplyParts.push(reply.lowStock(finalItem, currentQty));
+          }
+        } else {
+          combinedReplyParts.push(`⚠️ Artham kaaledu: "${line}"`);
         }
       } 
-      else if (actionResult.action === "bulk_add" || actionResult.action === "bulk_sold") {
-        const isAdd = actionResult.action === "bulk_add";
+      else if (effectiveAction === "bulk_add" || effectiveAction === "bulk_sold") {
+        isAnyActionTaken = true;
+        const isAdd = effectiveAction === "bulk_add";
         let summaryLines: string[] = [];
 
-        for (const item of actionResult.items) {
+        for (const item of parsed.items) {
           const tempAction: ParsedAction = {
             action: isAdd ? "ADD" : "SELL",
             item: item.item,
@@ -722,7 +765,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         }
         combinedReplyParts.push(summaryLines.join("\n"));
       } 
-      else if (actionResult.action === "inventory") {
+      else if (effectiveAction === "inventory") {
+        isAnyActionTaken = true;
         const inventoryRef = db.collection("shops").doc(sender).collection("inventory");
         const snapshot = await inventoryRef.get();
         if (snapshot.empty) {
@@ -739,7 +783,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           combinedReplyParts.push(reply.inventoryHeader(ownerFirstName) + "\n" + items.join("\n"));
         }
       } 
-      else if (actionResult.action === "report") {
+      else if (effectiveAction === "report") {
+        isAnyActionTaken = true;
         const logsRef = db.collection("shops").doc(sender).collection("logs");
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
@@ -756,6 +801,9 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const summaryText = Object.entries(summary).map(([key, val]) => `• ${key}: ${val}`).join("\n");
         combinedReplyParts.push(reply.reportHeader(ownerFirstName) + "\n" + (summaryText || "No activity today."));
       } 
+      else if (effectiveAction === "skip") {
+        continue;
+      }
       else {
         combinedReplyParts.push(`⚠️ Artham kaaledu: "${line}"`);
       }
