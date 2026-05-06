@@ -238,12 +238,14 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           }
         }
       }
-      else if (effectiveAction === "inventory") {
-        const inv = await getInventory(sender);
-        const list = inv.map((i: any) => `- ${capitalize(i.name)}: ${i.quantity} ${i.unit || ""} (₹${i.price || 0})`.trim()).sort().join("\n");
-        results.push(reply.inventoryHeader(ownerName) + "\n" + (list || "Empty"));
+      else if (effectiveAction === "VIEW_STOCK") {
+        const inventory = await getInventory(sender);
+        const lines = inventory
+          .filter((item: any) => item.quantity > 0)
+          .map((item: any) => `📦 ${capitalize(item.name)}: ${item.quantity} ${item.unit || ""}`.trim());
+        results.push(lines.length ? lines.join("\n") : "Stock emi ledu");
         isAnyAction = true;
-      } 
+      }
       else if (effectiveAction === "report") {
         const txs = await getTodayTransactions(sender);
         if (txs.length === 0) {
@@ -256,7 +258,6 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         }
 
         const sells = txs.filter(t => t.action === "SELL");
-        const adds = txs.filter(t => t.action === "ADD");
 
         // Group sells by item name with mandatory current price lookup
         const sellMap: Record<string, { qty: number; revenue: number; displayName: string }> = {};
@@ -283,14 +284,6 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const totalRevenue = Object.values(sellMap)
           .reduce((sum, { revenue }) => sum + revenue, 0);
 
-        // Group adds by item name
-        const addMap: Record<string, number> = {};
-        for (const t of adds) {
-          addMap[t.item] = (addMap[t.item] ?? 0) + t.quantity;
-        }
-        const addLines = Object.entries(addMap)
-          .map(([item, qty]) => `📦 Stocked ${capitalize(item)}: ${qty}`);
-
         const reportText = sellLines.length
           ? sellLines.join("\n")
           : "Inniki emee ammaledu 🙂";
@@ -298,7 +291,6 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const finalReply = 
           `Sulla anna, neti report idi:\n\n` + 
           reportText + "\n\n" + 
-          (addLines.length ? addLines.join("\n") + "\n\n" : "") + 
           `💰 Mottam aaya: ₹${totalRevenue}`;
 
         results.push(finalReply);

@@ -168,9 +168,11 @@ function smartParse(message: string): any {
   if (/low\s*stock|takkuva\s*stock|kam\s*stock|reorder/.test(msg))
     return { action: "low_stock" };
 
-  // 4. INVENTORY — standalone keywords
-  if (msg === "stock" || msg === "list" || msg === "nilava" || msg === "inventory" || msg === "maal" || inventoryWords.some(w => msg.includes(w)))
-    return { action: "inventory" };
+  // 4. VIEW_STOCK (Inventory) — standalone keywords
+  if (msg === "stock" || msg === "list" || msg === "nilava" || msg === "inventory" || msg === "maal" || 
+      ["stock chupinchu", "inventory ivvu", "stock enti"].some(w => msg.includes(w)) ||
+      inventoryWords.some(w => msg.includes(w)))
+    return { action: "VIEW_STOCK" };
 
   // 5. REPORT — check before number-based parsing
   if (reportWords.some(w => msg.includes(w)))
