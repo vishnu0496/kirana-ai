@@ -243,8 +243,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const lines = inventory
           .filter((item: any) => item.quantity > 0)
           .sort((a: any, b: any) => a.name.localeCompare(b.name))
-          .map((item: any) => `📦 ${capitalize(item.name)}: ${item.quantity}${item.unit ? " " + item.unit : ""}`);
-        
+          .map((item: any) => `📦 ${item.name}: ${item.quantity}${item.unit ? " " + item.unit : ""}`);
+
         results.push(lines.length ? lines.join("\n") : "Stock emi ledu 📭");
         isAnyAction = true;
       }
