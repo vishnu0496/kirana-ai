@@ -241,7 +241,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           }
         }
       }
-      else if (effectiveAction === "VIEW_STOCK") {
+      else if (effectiveAction === "VIEW_STOCK" || effectiveAction === "view_stock") {
         const inventory = await getInventory(sender);
         const lines = inventory
           .filter((item: any) => item.quantity > 0)
