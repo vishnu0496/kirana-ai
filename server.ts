@@ -258,22 +258,26 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const sells = txs.filter(t => t.action === "SELL");
         const adds = txs.filter(t => t.action === "ADD");
 
-        // Group sells by item name with lazy revenue lookup
-        const sellMap: Record<string, { qty: number; revenue: number }> = {};
+        // Group sells by item name with mandatory current price lookup
+        const sellMap: Record<string, { qty: number; revenue: number; displayName: string }> = {};
         for (const t of sells) {
-          let revenue = (t as any).revenue ?? 0;
-          if (!revenue && t.item) {
-            const price = await getItemPrice(sender, t.item);
-            if (price) revenue = price * t.quantity;
+          const itemKey = t.item?.toLowerCase().trim();
+          if (!itemKey) continue;
+
+          // Always look up current price from inventory for 100% accuracy
+          const currentPrice = await getItemPrice(sender, itemKey);
+          const revenue = currentPrice ? currentPrice * t.quantity : (t.revenue ?? 0);
+
+          if (!sellMap[itemKey]) {
+            sellMap[itemKey] = { qty: 0, revenue: 0, displayName: t.item };
           }
-          if (!sellMap[t.item]) sellMap[t.item] = { qty: 0, revenue: 0 };
-          sellMap[t.item].qty += t.quantity;
-          sellMap[t.item].revenue += revenue;
+          sellMap[itemKey].qty += t.quantity;
+          sellMap[itemKey].revenue += revenue;
         }
 
-        const sellLines = Object.entries(sellMap).map(([item, { qty, revenue }]) => {
+        const sellLines = Object.entries(sellMap).map(([, { qty, revenue, displayName }]) => {
           const revenueStr = revenue ? ` (₹${revenue})` : "";
-          return `🛒 Sold ${capitalize(item)}: ${qty}${revenueStr}`;
+          return `🛒 Sold ${capitalize(displayName)}: ${qty}${revenueStr}`;
         });
 
         const totalRevenue = Object.values(sellMap)
