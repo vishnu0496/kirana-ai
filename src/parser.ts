@@ -90,7 +90,9 @@ function cleanItemName(raw: string): string {
   const allVerbs = [...addVerbs, ...soldVerbs,
     // extra noise words that attach to item names
     "ninna","neti","ee roju","aaj","kal","yesterday",
-    "the","a","an","some","few"
+    "the","a","an","some","few",
+    "vachayi", "ammanu", "ammadu", "konnaamu", 
+    "stock chesamu", "add chesamu", "ayyayi"
   ];
   let cleaned = raw.trim().toLowerCase();
   for (const verb of allVerbs) {
