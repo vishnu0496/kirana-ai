@@ -11,11 +11,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // --- Configuration ---
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "KIRANA_SECRET";
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
+
+// --- Global State (In-Memory) ---
+const pendingOnboarding: Record<string, { step: "awaiting_shop_name" | "awaiting_owner_name"; shopName?: string }> = {};
 
 console.log(`[DEBUG] WHATSAPP_TOKEN starts with: ${WHATSAPP_TOKEN ? WHATSAPP_TOKEN.substring(0, 5) : "MISSING"}`);
 console.log(`[DEBUG] PHONE_ID: ${PHONE_ID || "MISSING"}`);
@@ -178,6 +181,34 @@ function parseMessageRuleBased(messageText: string): ParsedAction | null {
   return null;
 }
 
+function parseBulkAction(messageText: string): ParsedAction[] | null {
+  const text = messageText.toLowerCase().trim();
+  const bulkMatch = text.match(/^(sold|becha|add)\s+(.+)$/i);
+  if (!bulkMatch) return null;
+
+  const actionType = bulkMatch[1].toLowerCase() === "add" ? "ADD" : "SELL";
+  const content = bulkMatch[2];
+  
+  // Regex to find all "quantity item" pairs
+  const itemRegex = /(\d+)\s+([^0-9]+?)(?=\s+\d+|$)/g;
+  const matches = [...content.matchAll(itemRegex)];
+  
+  if (matches.length <= 1 && actionType === "SELL") {
+    // If only one item, let the normal rule-based or AI parser handle it
+    // unless it was specifically triggered by "becha"
+    if (bulkMatch[1].toLowerCase() !== "becha") return null;
+  }
+  
+  if (matches.length === 0) return null;
+
+  return matches.map(m => ({
+    action: actionType,
+    quantity: parseInt(m[1], 10),
+    item: m[2].trim(),
+    reply: actionType === "ADD" ? `Added ${m[1]} ${m[2].trim()}` : `Sold ${m[1]} ${m[2].trim()}`
+  }));
+}
+
 function isValidParsedAction(result: any): result is ParsedAction {
   if (!result || typeof result !== "object") return false;
   if (!["ADD", "SELL", "QUERY", "REPORT"].includes(result.action)) return false;
@@ -329,7 +360,78 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 
   console.log(`[WA RECV] ${sender}: ${messageText}`);
 
-  // 2. Parse with Rules or AI Fallback
+  // 1. FIRST TIME ONBOARDING LOGIC
+  const onboarding = pendingOnboarding[sender];
+  if (onboarding) {
+    if (onboarding.step === "awaiting_shop_name") {
+      const shopName = messageText.trim();
+      pendingOnboarding[sender] = { step: "awaiting_owner_name", shopName };
+      await sendWhatsAppMessage(sender, `Great! ${shopName} registered ✅\nAb apka naam batayein? (Your name please?)`);
+      return res.sendStatus(200);
+    } else if (onboarding.step === "awaiting_owner_name") {
+      const ownerName = messageText.trim();
+      const shopName = onboarding.shopName;
+      
+      // Save to Firestore
+      await db.collection("shops").doc(sender).collection("profile").doc("info").set({
+        shopName,
+        ownerName,
+        phone: sender,
+        registeredAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      
+      delete pendingOnboarding[sender];
+      
+      await sendWhatsAppMessage(sender, 
+        `Welcome ${ownerName} bhai! 🎉\n${shopName} is ready on Kirana AI.\n\nTry these commands:\n• add 10 soaps\n• sold 5 chips\n• show inventory\n• today report`
+      );
+      return res.sendStatus(200);
+    }
+  }
+
+  // Check if profile exists
+  const profileRef = db.collection("shops").doc(sender).collection("profile").doc("info");
+  const profileDoc = await profileRef.get();
+
+  if (!profileDoc.exists) {
+    pendingOnboarding[sender] = { step: "awaiting_shop_name" };
+    await sendWhatsAppMessage(sender, "Namaste! 🙏 Welcome to Kirana AI!\nApka shop ka naam kya hai?\n(What is your shop name?)");
+    return res.sendStatus(200);
+  }
+
+  const profileData = profileDoc.data();
+  const ownerFirstName = profileData?.ownerName?.split(" ")[0] || "Owner";
+
+  // 2. BULK PROCESSING
+  const bulkActions = parseBulkAction(messageText);
+  if (bulkActions && bulkActions.length > 1) {
+    let summaryLines = [`📊 ${bulkActions[0].action === "ADD" ? "Bulk stock update" : "End of day update"} done, ${ownerFirstName} bhai!`];
+    let lowStockAlerts: string[] = [];
+
+    for (const action of bulkActions) {
+      await processAddSell(sender, action);
+      
+      // Fetch new quantity for the summary and low stock check
+      const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(action.item.toLowerCase().trim()).get();
+      const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+      
+      summaryLines.push(`• ${action.action === "ADD" ? "Added" : "Sold"} ${action.item}: ${action.quantity} (remaining: ${currentQty})`);
+      
+      if (currentQty <= 5) {
+        lowStockAlerts.push(` • ${action.item} only ${currentQty} left — time to reorder!`);
+      }
+    }
+
+    let finalBulkReply = summaryLines.join("\n");
+    if (lowStockAlerts.length > 0) {
+      finalBulkReply += "\n\n⚠️ Low stock alert:\n" + lowStockAlerts.join("\n");
+    }
+
+    await sendWhatsAppMessage(sender, finalBulkReply);
+    return res.sendStatus(200);
+  }
+
+  // 3. NORMAL PROCESSING (Rules or AI Fallback)
   let parsedAction = parseMessageRuleBased(messageText);
   let handledBy = "RULES";
 
@@ -352,10 +454,26 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     // 3. Process the validated action
     if (parsedAction.action === "ADD" || parsedAction.action === "SELL") {
       finalReply = await processAddSell(sender, parsedAction);
+      
+      // Add personalization to the string returned by processAddSell
+      // Pattern: "Sold 5 chips\n📦 Current Total: X" -> "Sold 5 chips, Ramesh bhai!\n📦 Current Total: X"
+      finalReply = finalReply.replace("\n📦 Current Total:", `, ${ownerFirstName} bhai!\n📦 Current Total:`);
+
+      // Check Low Stock
+      const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(parsedAction.item.toLowerCase().trim()).get();
+      const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
+      if (currentQty <= 5) {
+        finalReply += `\n\n⚠️ Low stock alert:\n • ${parsedAction.item} only ${currentQty} left — time to reorder!`;
+      }
+
     } else if (parsedAction.action === "QUERY") {
       finalReply = await buildQueryReply(sender, parsedAction);
+      // Prepend personalization
+      finalReply = `${ownerFirstName} bhai, ` + finalReply.charAt(0).toLowerCase() + finalReply.slice(1);
     } else if (parsedAction.action === "REPORT") {
       finalReply = await buildReportReply(sender, parsedAction);
+      // Personalize
+      finalReply = `${ownerFirstName} bhai, here is today's report:\n` + finalReply.split("\n").slice(1).join("\n");
     }
 
     // 4. Reply via WhatsApp
