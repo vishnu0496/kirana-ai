@@ -188,7 +188,8 @@ function smartParse(message: string): any {
 
   // 7. BULK ADD — unit aware regex
   const bulkMatches = [...msg.matchAll(/(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|pkts|box|boxes|bottle|btl|pcs?|dozen|bag|roll)?\s+([a-z][a-z\s]*?)(?=\s*\d|$)/gi)];
-  if (msg.startsWith("add") && bulkMatches.length >= 2) {
+  const hasAddVerb = addVerbs.some(v => msg.includes(v));
+  if (hasAddVerb && bulkMatches.length >= 2) {
     return {
       action: "bulk_add",
       items: bulkMatches.map(m => ({
@@ -200,7 +201,8 @@ function smartParse(message: string): any {
   }
 
   // 8. FIND NUMBER + UNIT + ITEM (Number-First)
-  const numMatch = msg.match(/^(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i);
+  // Removed '^' to allow leading verbs like "add 10 santoor"
+  const numMatch = msg.match(/(\d+)\s*(kg|kgs|kilo|g|gm|l|ltr|ml|pkt|box|bottle|btl|pcs?|dozen|bag|roll)?\s+(.+)$/i);
   if (numMatch) {
     const qty = parseInt(numMatch[1]);
     const unit = numMatch[2] || "";
