@@ -47,6 +47,7 @@ const replyTemplates = {
       "Didn't understand 🙏 Try: 'add 5 chips' or 'show inventory'",
     notUnderstoodHelp: (item1: string, item2: string) => 
       `Didn't get that 🙏\nTry something like:\n• add 10 ${item1}\n• sold 5 ${item2}\n• show inventory`,
+    bulkDone: "All updates done! 📦",
   },
   telugu: {
     askShopName:
@@ -75,6 +76,7 @@ const replyTemplates = {
       "Artham kaaledu 🙏 Try: 'add 5 chips' or 'show inventory'",
     notUnderstoodHelp: (item1: string, item2: string) => 
       `Artham kaaledu 🙏\nIla try cheyyandi:\n• add 10 ${item1}\n• 5 ${item2} ammamu\n• nilava chupandi`,
+    bulkDone: "Anni update ayyayi! 📦",
   },
   hindi: {
     askShopName:
@@ -103,8 +105,13 @@ const replyTemplates = {
       "Samajh nahi aaya 🙏 Try: 'add 5 chips' ya 'show inventory'",
     notUnderstoodHelp: (item1: string, item2: string) => 
       `Samajh nahi aaya 🙏\nAisa try karein:\n• add 10 ${item1}\n• 5 ${item2} becha\n• stock dikao`,
+    bulkDone: "Sab update ho gaya! 📦",
   },
 };
+
+function capitalize(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 type Lang = "english" | "telugu" | "hindi";
 
@@ -683,19 +690,21 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(actionResult.item.toLowerCase().trim()).get();
         const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
         
-        let lineReply = isAdd 
-          ? reply.addSuccess(actionResult.quantity, actionResult.item, currentQty)
-          : reply.soldSuccess(actionResult.quantity, actionResult.item, currentQty);
+        const verb = isAdd 
+          ? (lang === "telugu" ? "add chesamu" : lang === "hindi" ? "add kiya" : "added")
+          : (lang === "telugu" ? "ammamu" : lang === "hindi" ? "becha" : "sold");
+        
+        const label = isAdd ? (lang === "telugu" ? "total" : "total") : (lang === "telugu" ? "migilina" : "remaining");
+
+        combinedReplyParts.push(`✅ ${actionResult.quantity} ${capitalize(actionResult.item)} ${verb} (${label}: ${currentQty})`);
 
         if (!isAdd && currentQty <= 5) {
-          lineReply += "\n\n" + reply.lowStock(actionResult.item, currentQty);
+          combinedReplyParts.push(reply.lowStock(actionResult.item, currentQty));
         }
-        combinedReplyParts.push(lineReply);
       } 
       else if (actionResult.action === "bulk_add" || actionResult.action === "bulk_sold") {
         const isAdd = actionResult.action === "bulk_add";
         let summaryLines: string[] = [];
-        let lowStockAlerts: string[] = [];
 
         for (const item of actionResult.items) {
           const tempAction: ParsedAction = {
@@ -709,33 +718,20 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(item.item.toLowerCase().trim()).get();
           const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
           
-          summaryLines.push(`• ${item.quantity} ${item.item} added (total: ${currentQty})`);
-          
-          if (!isAdd && currentQty <= 5) {
-            lowStockAlerts.push(reply.lowStock(item.item, currentQty));
-          }
+          summaryLines.push(`• ${item.quantity} ${capitalize(item.item)} ${isAdd ? "added" : "sold"} (total: ${currentQty})`);
         }
-
-        let bulkReply = isAdd 
-          ? (reply as any).bulkAddSuccess(summaryLines.join("\n"))
-          : `📊 End of day update done, ${ownerFirstName} bhai!\n` + summaryLines.join("\n").replace(/added/g, "sold");
-
-        if (lowStockAlerts.length > 0) {
-          bulkReply += "\n\n⚠️ Low stock alert:\n" + lowStockAlerts.join("\n");
-        }
-        combinedReplyParts.push(bulkReply);
+        combinedReplyParts.push(summaryLines.join("\n"));
       } 
       else if (actionResult.action === "inventory") {
         const inventoryRef = db.collection("shops").doc(sender).collection("inventory");
         const snapshot = await inventoryRef.get();
         if (snapshot.empty) {
-          combinedReplyParts.push(reply.inventoryHeader(ownerFirstName) + "\nEmpty / ఖాళీగా ఉంది / खाली है");
+          combinedReplyParts.push(reply.inventoryHeader(ownerFirstName) + "\nEmpty");
         } else {
           const items = snapshot.docs
             .map(doc => {
               const data = doc.data();
-              const capitalizedName = data.name.charAt(0).toUpperCase() + data.name.slice(1);
-              return { name: capitalizedName, quantity: data.quantity };
+              return { name: capitalize(data.name), quantity: data.quantity };
             })
             .sort((a, b) => a.name.localeCompare(b.name))
             .map(item => `- ${item.name}: ${item.quantity}`);
@@ -751,9 +747,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const logSnapshot = await logsRef.where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay)).get();
         const summary = logSnapshot.docs.reduce((acc: any, d) => {
           const data = d.data();
-          const capitalizedItem = data.item.charAt(0).toUpperCase() + data.item.slice(1);
           const label = data.action === "ADD" ? "📦 Stocked" : "🛒 Sold";
-          const key = `${label} ${capitalizedItem}`;
+          const key = `${label} ${capitalize(data.item)}`;
           acc[key] = (acc[key] || 0) + data.quantity;
           return acc;
         }, {});
@@ -762,19 +757,13 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         combinedReplyParts.push(reply.reportHeader(ownerFirstName) + "\n" + (summaryText || "No activity today."));
       } 
       else {
-        if (lines.length === 1) {
-          const inventoryRef = db.collection("shops").doc(sender).collection("inventory");
-          const snapshot = await inventoryRef.limit(2).get();
-          const exampleItems = snapshot.docs.map(d => d.data().name);
-          const item1 = exampleItems[0] || "santoor";
-          const item2 = exampleItems[1] || "lays masala";
-          combinedReplyParts.push((reply as any).notUnderstoodHelp(item1, item2));
-        }
+        combinedReplyParts.push(`⚠️ Artham kaaledu: "${line}"`);
       }
     }
 
     if (isAnyActionTaken && combinedReplyParts.length > 0) {
-      await sendWhatsAppMessage(sender, combinedReplyParts.join("\n\n"));
+      const header = (reply as any).bulkDone || "Updates done! 📦";
+      await sendWhatsAppMessage(sender, header + "\n\n" + combinedReplyParts.join("\n"));
     }
   } catch (error) {
     console.error("[PROCESS ERROR]", error);
