@@ -133,9 +133,9 @@ export function findFuzzyMatch(
   );
   if (exact) return exact;
 
-  // One contains the other
+  // One contains the other (Aggressive merge for prefixes/suffixes)
   const contains = existingItems.find(e => {
-    const e2 = e.toLowerCase();
+    const e2 = e.toLowerCase().trim();
     return e2.includes(n) || n.includes(e2);
   });
   if (contains) return contains;
