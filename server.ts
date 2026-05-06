@@ -124,8 +124,8 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
 
   const reply = getReply(lang), ownerName = (profile.ownerName || "Owner").split(" ")[0];
 
-  // FIX 1 & 3: Handle pricing queue
-  const priceQueue = await getPriceQueue(sender);
+  // FIX 2: Optimized - use queue from already-fetched profile
+  const priceQueue: string[] = (profile as any).pendingPriceFor || [];
   if (priceQueue.length > 0) {
     const priceMatch = messageText.match(/(\d+)/);
     const price = priceMatch ? parseInt(priceMatch[1]) : null;
@@ -136,7 +136,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         await setItemPrice(sender, itemName, price);
         await sendWhatsAppMessage(sender, reply.priceConfirmed(capitalize(itemName), price));
         
-        // Check for next item in queue
+        // Check for next item in queue (re-read to get latest)
         const remaining = await getPriceQueue(sender);
         if (remaining.length > 0) {
           await sendWhatsAppMessage(sender, reply.askPrice(capitalize(remaining[0])));
@@ -246,6 +246,15 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
       } 
       else if (effectiveAction === "report") {
         const logs = await getTodayTransactions(sender);
+        if (logs.length === 0) {
+          let emptyMsg = "No transactions today yet! Start by adding stock 📦";
+          if (lang === "telugu") emptyMsg = "Neti transactions emi levu! Stock add cheyandi 📦";
+          else if (lang === "hindi") emptyMsg = "Aaj koi transaction nahi! Stock add karo 📦";
+          results.push(emptyMsg);
+          isAnyAction = true;
+          continue;
+        }
+
         let totalRevenue = 0;
         const summary = logs.reduce((acc: any, l: any) => {
           const isSell = l.action === "SELL";
@@ -264,10 +273,11 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
           const revText = v.rev > 0 ? ` (₹${v.rev})` : "";
           return `• ${k}: ${v.qty} ${v.unit}${revText}`.trim();
         }).join("\n");
-        results.push(reply.reportHeader(ownerName) + "\n" + (text || "No activity"));
+        results.push(reply.reportHeader(ownerName) + "\n" + text);
         if (totalRevenue > 0) results.push(reply.reportRevenue(totalRevenue));
         isAnyAction = true;
-      } else if (parsed.action !== "skip") {
+      }
+ else if (parsed.action !== "skip") {
         results.push(`⚠️ Artham kaaledu: "${line}"`);
       }
     }

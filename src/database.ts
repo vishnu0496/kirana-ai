@@ -172,10 +172,15 @@ async function logTransaction(phone: string, action: string, item: string, quant
 
 async function getTodayTransactions(phone: string) {
   const logsRef = db.collection("shops").doc(phone).collection("logs");
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  
-  const snapshot = await logsRef.where("timestamp", ">=", admin.firestore.Timestamp.fromDate(startOfDay)).get();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayTimestamp = admin.firestore.Timestamp.fromDate(today);
+
+  const snapshot = await logsRef
+    .where("timestamp", ">=", todayTimestamp)
+    .orderBy("timestamp", "asc")
+    .get();
+    
   return snapshot.docs.map(doc => doc.data());
 }
 
