@@ -35,6 +35,8 @@ const replyTemplates = {
       `⚠️ Low stock: ${item} only ${remaining} left — reorder soon!`,
     outOfStock: (item: string) =>
       `❌ ${item} is out of stock. Please restock first.`,
+    bulkAddSuccess: (lines: string) => 
+      `Stock updated! 📦\n${lines}`,
     inventoryHeader: (name: string) =>
       `${name}, here is your inventory:`,
     reportHeader: (name: string) =>
@@ -59,6 +61,8 @@ const replyTemplates = {
       `⚠️ Stock takkuva: ${item} kevalam ${remaining} undhi — tvaraga order ivvandi!`,
     outOfStock: (item: string) =>
       `❌ ${item} stock ledu. Mundu restock cheyyandi.`,
+    bulkAddSuccess: (lines: string) => 
+      `Stock updated! 📦\n${lines}`,
     inventoryHeader: (name: string) =>
       `${name} anna, mee inventory idi:`,
     reportHeader: (name: string) =>
@@ -83,6 +87,8 @@ const replyTemplates = {
       `⚠️ Stock kam: ${item} sirf ${remaining} bacha — jaldi order karo!`,
     outOfStock: (item: string) =>
       `❌ ${item} khatam ho gaya. Pehle restock karo.`,
+    bulkAddSuccess: (lines: string) => 
+      `Stock updated! 📦\n${lines}`,
     inventoryHeader: (name: string) =>
       `${name} bhai, aapki inventory:`,
     reportHeader: (name: string) =>
@@ -124,6 +130,18 @@ function ruleBasedParse(message: string): any {
   ];
   if (greetings.includes(msg)) return { action: "greeting" };
 
+  // BULK ADD — Check this BEFORE single add
+  const bulkPairs = [...msg.matchAll(/(\d+)\s+([a-z]+)/g)];
+  if (msg.startsWith("add") && bulkPairs.length >= 2) {
+    return {
+      action: "bulk_add",
+      items: bulkPairs.map(p => ({ 
+        quantity: parseInt(p[1]), 
+        item: p[2] 
+      }))
+    };
+  }
+
   // ADD single item — "add 10 soaps" or "10 soaps add"
   const addMatch = msg.match(/^add\s+(\d+)\s+(.+)$|^(\d+)\s+(.+?)\s+add$/);
   if (addMatch) {
@@ -132,18 +150,6 @@ function ruleBasedParse(message: string): any {
       quantity: parseInt(addMatch[1] ?? addMatch[3]),
       item: (addMatch[2] ?? addMatch[4]).trim(),
     };
-  }
-
-  // BULK ADD — "add 10 soaps 5 chips 3 oil"
-  const bulkAdd = msg.match(/^add\s+((?:\d+\s+\S+\s*)+)$/);
-  if (bulkAdd) {
-    const pairs = [...bulkAdd[1].matchAll(/(\d+)\s+(\S+)/g)];
-    if (pairs.length > 1) {
-      return {
-        action: "bulk_add",
-        items: pairs.map((p) => ({ quantity: parseInt(p[1]), item: p[2] })),
-      };
-    }
   }
 
   // BULK SOLD — detect pattern manually if not in ruleBasedParse request, but user request implies comprehensive rules
@@ -588,7 +594,16 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
   }
 
   const profileData = profileDoc.data();
-  const lang = (profileData?.language as Lang) || "english";
+  let lang = (profileData?.language as Lang) || "english";
+
+  // BUG 1 FIX: Language update for existing users
+  const newDetectedLang = detectLanguage(messageText);
+  if ((newDetectedLang === "telugu" || newDetectedLang === "hindi") && newDetectedLang !== lang) {
+    lang = newDetectedLang;
+    await profileRef.update({ language: lang });
+    console.log(`[LANG SWITCH] ${sender} switched to ${lang}`);
+  }
+
   const ownerName = profileData?.ownerName || "Owner";
   const ownerFirstName = ownerName.split(" ")[0];
   const reply = getReply(lang);
@@ -629,7 +644,7 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
     } 
     else if (actionResult.action === "bulk_add" || actionResult.action === "bulk_sold") {
       const isAdd = actionResult.action === "bulk_add";
-      let summaryLines = [isAdd ? `📊 Bulk stock update done, ${ownerFirstName} bhai!` : `📊 End of day update done, ${ownerFirstName} bhai!`];
+      let summaryLines: string[] = [];
       let lowStockAlerts: string[] = [];
 
       for (const item of actionResult.items) {
@@ -644,14 +659,20 @@ app.post("/api/webhook/whatsapp", async (req, res) => {
         const itemDoc = await db.collection("shops").doc(sender).collection("inventory").doc(item.item.toLowerCase().trim()).get();
         const currentQty = itemDoc.exists ? (itemDoc.data() as any).quantity : 0;
         
-        summaryLines.push(`• ${isAdd ? "Added" : "Sold"} ${item.item}: ${item.quantity} (Total: ${currentQty})`);
+        // BUG 3 FIX: Bulk add reply message format
+        summaryLines.push(`• ${item.quantity} ${item.item} added (total: ${currentQty})`);
         
         if (currentQty <= 5) {
           lowStockAlerts.push(reply.lowStock(item.item, currentQty));
         }
       }
 
-      finalReply = summaryLines.join("\n");
+      if (isAdd) {
+        finalReply = (reply as any).bulkAddSuccess(summaryLines.join("\n"));
+      } else {
+        finalReply = `📊 End of day update done, ${ownerFirstName} bhai!\n` + summaryLines.join("\n").replace(/added/g, "sold");
+      }
+
       if (lowStockAlerts.length > 0) {
         finalReply += "\n\n⚠️ Low stock alert:\n" + lowStockAlerts.join("\n");
       }
